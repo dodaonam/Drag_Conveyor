@@ -1,0 +1,25 @@
+[project]
+name = "drag-conveyor"
+version = "0.1.0"
+description = "White bar inspection runtime for drag conveyor defect screening."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=7.2.0",
+    "matplotlib>=3.10.9",
+    "onnx>=1.21.0",
+    "onnxruntime>=1.26.0",
+    "opencv-python>=4.13.0.92",
+    "pyside6>=6.10.0",
+    "ultralytics>=8.4.56",
+]
+
+[project.scripts]
+drag-conveyor = "drag_conveyor.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["drag_conveyor*", "acceptance*"]
