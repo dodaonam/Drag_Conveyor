@@ -6,6 +6,9 @@ import numpy as np
 
 from ..config import InspectionRegionConfig
 
+TRIGGER_POSITION_RATIO = 0.5
+TRIGGER_THICKNESS_RATIO = 0.25
+
 
 @dataclass(frozen=True, slots=True)
 class BandRect:
@@ -14,7 +17,6 @@ class BandRect:
     x2: int
     y2: int
     centerline: float
-    orientation: str  # "horizontal" or "vertical"
 
 
 def build_trigger_band(region: InspectionRegionConfig) -> BandRect:
@@ -23,51 +25,25 @@ def build_trigger_band(region: InspectionRegionConfig) -> BandRect:
     x2 = int(region.x + region.w)
     y2 = int(region.y + region.h)
 
-    direction = region.direction
-    thickness_ratio = region.trigger_band.thickness_ratio
-    position_ratio = region.trigger_band.position_ratio
-
-    if direction in {"top_to_bottom", "bottom_to_top"}:
-        thickness = max(1, int(round(region.h * thickness_ratio)))
-        center = region.y + region.h * position_ratio
-        half = thickness / 2.0
-        by1 = int(round(center - half))
-        by2 = int(round(center + half))
-        by1 = max(y1, by1)
-        by2 = min(y2, by2)
-        return BandRect(x1=x1, y1=by1, x2=x2, y2=by2, centerline=center, orientation="horizontal")
-
-    thickness = max(1, int(round(region.w * thickness_ratio)))
-    center = region.x + region.w * position_ratio
+    thickness = max(1, int(round(region.h * TRIGGER_THICKNESS_RATIO)))
+    center = region.y + region.h * TRIGGER_POSITION_RATIO
     half = thickness / 2.0
-    bx1 = int(round(center - half))
-    bx2 = int(round(center + half))
-    bx1 = max(x1, bx1)
-    bx2 = min(x2, bx2)
-    return BandRect(x1=bx1, y1=y1, x2=bx2, y2=y2, centerline=center, orientation="vertical")
+    by1 = max(y1, int(round(center - half)))
+    by2 = min(y2, int(round(center + half)))
+    return BandRect(x1=x1, y1=by1, x2=x2, y2=by2, centerline=center)
 
 
 def centroid_crossed(
     prev_xy: tuple[float, float] | None,
     curr_xy: tuple[float, float],
-    direction: str,
     centerline: float,
 ) -> bool:
     if prev_xy is None:
         return False
 
-    prev_x, prev_y = prev_xy
-    curr_x, curr_y = curr_xy
-
-    if direction == "top_to_bottom":
-        return prev_y < centerline <= curr_y
-    if direction == "bottom_to_top":
-        return prev_y > centerline >= curr_y
-    if direction == "left_to_right":
-        return prev_x < centerline <= curr_x
-    if direction == "right_to_left":
-        return prev_x > centerline >= curr_x
-    raise ValueError(f"Unsupported direction: {direction}")
+    prev_y = prev_xy[1]
+    curr_y = curr_xy[1]
+    return prev_y < centerline <= curr_y
 
 
 def centroid_inside_band(curr_xy: tuple[float, float], band: BandRect) -> bool:
@@ -140,7 +116,6 @@ class TriggerEngine:
         track_id: int,
         prev_xy: tuple[float, float] | None,
         curr_xy: tuple[float, float],
-        direction: str,
         centerline: float,
         band: BandRect,
         overlap_ratio: float,
@@ -152,7 +127,6 @@ class TriggerEngine:
         crossed = centroid_crossed(
             prev_xy=prev_xy,
             curr_xy=curr_xy,
-            direction=direction,
             centerline=centerline,
         )
         inside_band = self.allow_inside_band_trigger and centroid_inside_band(curr_xy, band)
@@ -169,6 +143,8 @@ class TriggerEngine:
 
 __all__ = [
     "BandRect",
+    "TRIGGER_POSITION_RATIO",
+    "TRIGGER_THICKNESS_RATIO",
     "TriggerEngine",
     "build_trigger_band",
     "centroid_crossed",

@@ -16,24 +16,6 @@ class ProfileError(Exception):
 
 
 @dataclass(slots=True)
-class DeviceHint:
-    name_contains: str = "USB"
-    last_success_backend: str = "DSHOW"
-
-
-@dataclass(slots=True)
-class CameraConfig:
-    index: int = 0
-    name: str = "USB Camera"
-    width: int = 1280
-    height: int = 720
-    fps: int = 30
-    backend: str = "DSHOW"
-    fourcc: str = "MJPG"
-    device_hint: DeviceHint = field(default_factory=DeviceHint)
-
-
-@dataclass(slots=True)
 class PreprocessConfig:
     type: str = "letterbox"
     normalize: bool = True
@@ -66,10 +48,7 @@ class ModelConfig:
 
 @dataclass(slots=True)
 class TriggerBandConfig:
-    position_ratio: float = 0.75
-    thickness_ratio: float = 0.10
     min_overlap_ratio: float = 0.10
-    trigger_mode: str = "centroid_crossing_and_mask_overlap"
     pending_ttl_frames: int = 3
     allow_inside_band_trigger: bool = True
 
@@ -82,7 +61,6 @@ class InspectionRegionConfig:
     y: int = 80
     w: int = 960
     h: int = 520
-    direction: str = "top_to_bottom"
     trigger_band: TriggerBandConfig = field(default_factory=TriggerBandConfig)
 
 
@@ -95,42 +73,8 @@ class TrackerConfig:
 
 
 @dataclass(slots=True)
-class HardRulesConfig:
-    area_hard_min_ratio: float = 0.85
-    length_hard_min_ratio: float = 0.90
-
-
-@dataclass(slots=True)
-class MinRule:
-    value: float
-    weight: float
-    active: bool = True
-
-
-@dataclass(slots=True)
-class RangeRule:
-    min: float
-    max: float
-    weight: float
-    active: bool = True
-
-
-@dataclass(slots=True)
-class SoftRulesConfig:
-    area_min: MinRule = field(default_factory=lambda: MinRule(value=12000, weight=0.35, active=True))
-    length_min: MinRule = field(default_factory=lambda: MinRule(value=180, weight=0.25, active=True))
-    width_range: RangeRule = field(default_factory=lambda: RangeRule(min=20, max=40, weight=0.10, active=False))
-    aspect_ratio_range: RangeRule = field(
-        default_factory=lambda: RangeRule(min=5.0, max=15.0, weight=0.15, active=True)
-    )
-
-
-@dataclass(slots=True)
 class RulesConfig:
-    mode: str = "geometry"
-    score_threshold: float = 0.5
-    hard_rules: HardRulesConfig = field(default_factory=HardRulesConfig)
-    soft_rules: SoftRulesConfig = field(default_factory=SoftRulesConfig)
+    mode: str = "length_width_auto_baseline"
 
 
 @dataclass(slots=True)
@@ -177,8 +121,7 @@ class LoggingConfig:
 @dataclass(slots=True)
 class Profile:
     profile_version: str = PROFILE_VERSION
-    profile_name: str = "line_01_usb_camera"
-    camera: CameraConfig = field(default_factory=CameraConfig)
+    profile_name: str = "line_01"
     model: ModelConfig = field(default_factory=ModelConfig)
     inspection_region: InspectionRegionConfig = field(default_factory=InspectionRegionConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
@@ -190,12 +133,43 @@ class Profile:
     def clone(self) -> "Profile":
         return copy.deepcopy(self)
 
+    def with_roi(self, roi_config: dict) -> "Profile":
+        """Return a deep copy of this profile with inspection_region overridden by roi_config.
+
+        roi_config keys: x, y, w, h, frame_width, frame_height.
+        Trigger band placement is fixed by the runtime contract.
+        """
+        missing_keys = ROI_CONFIG_KEYS - set(roi_config)
+        if missing_keys:
+            raise ProfileError(f"Missing ROI keys: {', '.join(sorted(missing_keys))}")
+        unknown_keys = set(roi_config) - ROI_CONFIG_KEYS
+        if unknown_keys:
+            raise ProfileError(f"Unsupported ROI keys: {', '.join(sorted(unknown_keys))}")
+
+        cloned = self.clone()
+        region = cloned.inspection_region
+        region.x = int(roi_config["x"])
+        region.y = int(roi_config["y"])
+        region.w = int(roi_config["w"])
+        region.h = int(roi_config["h"])
+        region.frame_width = int(roi_config["frame_width"])
+        region.frame_height = int(roi_config["frame_height"])
+        validate_profile(cloned)
+        return cloned
+
 
 REQUIRED_CALIBRATION_FEATURES = {
-    "area",
     "length",
     "width",
-    "aspect_ratio",
+}
+
+ROI_CONFIG_KEYS = {
+    "x",
+    "y",
+    "w",
+    "h",
+    "frame_width",
+    "frame_height",
 }
 
 
@@ -207,29 +181,6 @@ def _parse_version(version: str) -> tuple[int, int, int]:
         return tuple(int(x) for x in parts)  # type: ignore[return-value]
     except ValueError as exc:
         raise ProfileError(f"Invalid profile_version format: {version}") from exc
-
-
-def _min_rule_from_dict(data: dict[str, Any], key: str, default: MinRule) -> MinRule:
-    d = data.get(key)
-    if not isinstance(d, dict):
-        return default
-    return MinRule(
-        value=float(d.get("value", default.value)),
-        weight=float(d.get("weight", default.weight)),
-        active=bool(d.get("active", default.active)),
-    )
-
-
-def _range_rule_from_dict(data: dict[str, Any], key: str, default: RangeRule) -> RangeRule:
-    d = data.get(key)
-    if not isinstance(d, dict):
-        return default
-    return RangeRule(
-        min=float(d.get("min", default.min)),
-        max=float(d.get("max", default.max)),
-        weight=float(d.get("weight", default.weight)),
-        active=bool(d.get("active", default.active)),
-    )
 
 
 def _feature_stats_from_dict(data: dict[str, Any]) -> FeatureStats:
@@ -278,37 +229,36 @@ def migrate_profile_dict(raw: dict[str, Any]) -> dict[str, Any]:
 def profile_from_dict(raw: dict[str, Any]) -> Profile:
     data = migrate_profile_dict(raw)
 
-    camera_raw = _required_section(data, "camera")
     model_raw = _required_section(data, "model")
     region_raw = _required_section(data, "inspection_region")
     tracker_raw = _required_section(data, "tracker")
     rules_raw = _required_section(data, "rules")
     cal_raw = _required_section(data, "calibration")
+    trigger_raw = region_raw.get("trigger_band", {})
     logging_raw = data.get("logging", {})
     if not isinstance(logging_raw, dict):
         raise ProfileError("Invalid 'logging' section")
+    if not isinstance(trigger_raw, dict):
+        raise ProfileError("Invalid 'inspection_region.trigger_band' section")
 
-    defaults = SoftRulesConfig()
+    if "direction" in region_raw:
+        raise ProfileError("inspection_region.direction is no longer supported")
+    unknown_rule_keys = set(rules_raw) - {"mode"}
+    if unknown_rule_keys:
+        raise ProfileError(f"Unsupported rules keys: {', '.join(sorted(unknown_rule_keys))}")
+    supported_trigger_keys = {
+        "min_overlap_ratio",
+        "pending_ttl_frames",
+        "allow_inside_band_trigger",
+    }
+    unknown_trigger_keys = set(trigger_raw) - supported_trigger_keys
+    if unknown_trigger_keys:
+        raise ProfileError(f"Unsupported trigger_band keys: {', '.join(sorted(unknown_trigger_keys))}")
 
     try:
         profile = Profile(
             profile_version=str(data["profile_version"]),
-            profile_name=str(data.get("profile_name", "line_01_usb_camera")),
-            camera=CameraConfig(
-                index=int(camera_raw.get("index", 0)),
-                name=str(camera_raw.get("name", "USB Camera")),
-                width=int(camera_raw.get("width", 1280)),
-                height=int(camera_raw.get("height", 720)),
-                fps=int(camera_raw.get("fps", 30)),
-                backend=str(camera_raw.get("backend", "DSHOW")),
-                fourcc=str(camera_raw.get("fourcc", "MJPG")),
-                device_hint=DeviceHint(
-                    name_contains=str(camera_raw.get("device_hint", {}).get("name_contains", "USB")),
-                    last_success_backend=str(
-                        camera_raw.get("device_hint", {}).get("last_success_backend", "DSHOW")
-                    ),
-                ),
-            ),
+            profile_name=str(data.get("profile_name", "line_01")),
             model=ModelConfig(
                 path=str(model_raw.get("path", "weights/best.onnx")),
                 backend=str(model_raw.get("backend", "onnxruntime")),
@@ -339,20 +289,10 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                 y=int(region_raw.get("y", 0)),
                 w=int(region_raw.get("w", 1280)),
                 h=int(region_raw.get("h", 720)),
-                direction=str(region_raw.get("direction", "top_to_bottom")),
                 trigger_band=TriggerBandConfig(
-                    position_ratio=float(region_raw.get("trigger_band", {}).get("position_ratio", 0.75)),
-                    thickness_ratio=float(region_raw.get("trigger_band", {}).get("thickness_ratio", 0.10)),
-                    min_overlap_ratio=float(region_raw.get("trigger_band", {}).get("min_overlap_ratio", 0.10)),
-                    trigger_mode=str(
-                        region_raw.get("trigger_band", {}).get(
-                            "trigger_mode", "centroid_crossing_and_mask_overlap"
-                        )
-                    ),
-                    pending_ttl_frames=int(region_raw.get("trigger_band", {}).get("pending_ttl_frames", 3)),
-                    allow_inside_band_trigger=bool(
-                        region_raw.get("trigger_band", {}).get("allow_inside_band_trigger", True)
-                    ),
+                    min_overlap_ratio=float(trigger_raw.get("min_overlap_ratio", 0.10)),
+                    pending_ttl_frames=int(trigger_raw.get("pending_ttl_frames", 3)),
+                    allow_inside_band_trigger=bool(trigger_raw.get("allow_inside_band_trigger", True)),
                 ),
             ),
             tracker=TrackerConfig(
@@ -362,30 +302,7 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                 min_hits=int(tracker_raw.get("min_hits", 2)),
             ),
             rules=RulesConfig(
-                mode=str(rules_raw.get("mode", "geometry")),
-                score_threshold=float(rules_raw.get("score_threshold", 0.5)),
-                hard_rules=HardRulesConfig(
-                    area_hard_min_ratio=float(
-                        rules_raw.get("hard_rules", {}).get("area_hard_min_ratio", 0.85)
-                    ),
-                    length_hard_min_ratio=float(
-                        rules_raw.get("hard_rules", {}).get("length_hard_min_ratio", 0.90)
-                    ),
-                ),
-                soft_rules=SoftRulesConfig(
-                    area_min=_min_rule_from_dict(
-                        rules_raw.get("soft_rules", {}), "area_min", defaults.area_min
-                    ),
-                    length_min=_min_rule_from_dict(
-                        rules_raw.get("soft_rules", {}), "length_min", defaults.length_min
-                    ),
-                    width_range=_range_rule_from_dict(
-                        rules_raw.get("soft_rules", {}), "width_range", defaults.width_range
-                    ),
-                    aspect_ratio_range=_range_rule_from_dict(
-                        rules_raw.get("soft_rules", {}), "aspect_ratio_range", defaults.aspect_ratio_range
-                    ),
-                ),
+                mode=str(rules_raw.get("mode", "length_width_auto_baseline")),
             ),
             calibration=CalibrationConfig(
                 target_valid_records=int(cal_raw.get("target_valid_records", 70)),
@@ -434,12 +351,6 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
 
 
 def validate_profile(profile: Profile) -> None:
-    cam = profile.camera
-    if cam.width <= 0 or cam.height <= 0:
-        raise ProfileError("camera width/height must be positive")
-    if cam.fps <= 0:
-        raise ProfileError("camera.fps must be positive")
-
     model = profile.model
     if not model.path.strip():
         raise ProfileError("model.path must not be empty")
@@ -475,21 +386,8 @@ def validate_profile(profile: Profile) -> None:
         raise ProfileError("inspection_region dimensions must be positive")
     if region.x + region.w > region.frame_width or region.y + region.h > region.frame_height:
         raise ProfileError("inspection_region must be inside frame bounds")
-    if region.direction not in {
-        "top_to_bottom",
-        "bottom_to_top",
-        "left_to_right",
-        "right_to_left",
-    }:
-        raise ProfileError(f"Unsupported direction: {region.direction}")
 
     band = region.trigger_band
-    if not 0 <= band.position_ratio <= 1:
-        raise ProfileError("trigger_band.position_ratio must be in [0, 1]")
-    if band.thickness_ratio <= 0:
-        raise ProfileError("trigger_band.thickness_ratio must be > 0")
-    if band.thickness_ratio > 1:
-        raise ProfileError("trigger_band.thickness_ratio must be <= 1")
     if not 0 <= band.min_overlap_ratio <= 1:
         raise ProfileError("trigger_band.min_overlap_ratio must be in [0, 1]")
     if band.pending_ttl_frames < 0:
@@ -504,27 +402,8 @@ def validate_profile(profile: Profile) -> None:
         raise ProfileError("tracker.min_hits must be >= 1")
 
     rules = profile.rules
-    if not 0 <= rules.score_threshold <= 1:
-        raise ProfileError("rules.score_threshold must be in [0, 1]")
-    if rules.hard_rules.area_hard_min_ratio <= 0:
-        raise ProfileError("rules.hard_rules.area_hard_min_ratio must be > 0")
-    if rules.hard_rules.length_hard_min_ratio <= 0:
-        raise ProfileError("rules.hard_rules.length_hard_min_ratio must be > 0")
-
-    soft_rules = [
-        rules.soft_rules.area_min,
-        rules.soft_rules.length_min,
-        rules.soft_rules.width_range,
-        rules.soft_rules.aspect_ratio_range,
-    ]
-    if any(rule.weight < 0 for rule in soft_rules):
-        raise ProfileError("soft rule weights must be >= 0")
-    if rules.soft_rules.width_range.min >= rules.soft_rules.width_range.max:
-        raise ProfileError("rules.soft_rules.width_range.min must be < max")
-    if rules.soft_rules.aspect_ratio_range.min >= rules.soft_rules.aspect_ratio_range.max:
-        raise ProfileError("rules.soft_rules.aspect_ratio_range.min must be < max")
-    if not any(rule.active for rule in soft_rules):
-        raise ProfileError("At least one soft rule must be active")
+    if rules.mode != "length_width_auto_baseline":
+        raise ProfileError("rules.mode must be 'length_width_auto_baseline'")
 
     calibration = profile.calibration
     if calibration.min_valid_records <= 0:

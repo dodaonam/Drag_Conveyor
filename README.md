@@ -1,11 +1,8 @@
 ```bash
-uv run python -m drag_conveyor gui   
+uv run python -m drag_conveyor self-check --profile config/base_profile.json
+uv run python -m drag_conveyor inspect --profile config/base_profile.json --source data/raw_data/vid_1.mp4
 ```
 
-Chọn video demo
+Hoặc chạy web server để upload video và chọn ROI trực tiếp từ giao diện mobile/web.
 
-Freeze frame để setup ROI, Trigger
-
-Lấy chuẩn tự động sẽ đo kích thước 70 thanh
-
-Start Detect để phát hiện lỗi
+ROI hiện luôn xử lý theo hướng băng chuyền từ trên xuống dưới; giao diện chỉ cho chọn vùng kiểm tra và trigger band.

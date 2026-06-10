@@ -226,3 +226,7 @@ tests/
 train/
 scripts/
 runtime/
+server/jobs.db
+
+.claude/
+docs/

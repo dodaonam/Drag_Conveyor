@@ -14,7 +14,6 @@ class RuleEvaluation:
     thresholds: dict[str, float]
     margins: dict[str, float]
     hard_fail: bool
-    violated_soft_rules: list[str]
 
 
 class RuleEngine:
@@ -24,67 +23,47 @@ class RuleEngine:
         rules: RulesConfig,
         calibration_result: CalibrationResult,
     ) -> RuleEvaluation:
+        if rules.mode != "length_width_auto_baseline":
+            raise ValueError(f"Unsupported rules.mode: {rules.mode}")
+
         reasons: list[str] = []
 
-        area = float(measurements["area"])
         length = float(measurements["length"])
         width = float(measurements["width"])
-        aspect_ratio = float(measurements["aspect_ratio"])
 
-        area_min = _lower(calibration_result.features["area"])
-        area_max = _upper(calibration_result.features["area"])
         length_min = _lower(calibration_result.features["length"])
         length_max = _upper(calibration_result.features["length"])
         width_min = _lower(calibration_result.features["width"])
         width_max = _upper(calibration_result.features["width"])
-        aspect_ratio_min = _lower(calibration_result.features["aspect_ratio"])
-        aspect_ratio_max = _upper(calibration_result.features["aspect_ratio"])
+
         thresholds: dict[str, float] = {
-            "area_min": float(area_min),
-            "area_max": float(area_max),
             "length_min": float(length_min),
             "length_max": float(length_max),
             "width_min": float(width_min),
             "width_max": float(width_max),
-            "aspect_ratio_min": float(aspect_ratio_min),
-            "aspect_ratio_max": float(aspect_ratio_max),
         }
         margins: dict[str, float] = {
-            "area_margin": float(min(area - area_min, area_max - area)),
             "length_margin": float(min(length - length_min, length_max - length)),
             "width_margin": float(min(width - width_min, width_max - width)),
-            "aspect_ratio_margin": float(min(aspect_ratio - aspect_ratio_min, aspect_ratio_max - aspect_ratio)),
         }
-        violated_soft_rules: list[str] = []
-
-        if area < area_min:
-            reasons.append("area_too_small")
-            violated_soft_rules.append("area")
-        elif area > area_max:
-            reasons.append("area_too_large")
-            violated_soft_rules.append("area")
+        violated_dimensions = 0
 
         if length < length_min:
             reasons.append("length_too_short")
-            violated_soft_rules.append("length")
+            violated_dimensions += 1
         elif length > length_max:
             reasons.append("length_too_long")
-            violated_soft_rules.append("length")
+            violated_dimensions += 1
 
         if width < width_min:
             reasons.append("width_too_small")
-            violated_soft_rules.append("width")
+            violated_dimensions += 1
         elif width > width_max:
             reasons.append("width_too_large")
-            violated_soft_rules.append("width")
+            violated_dimensions += 1
 
-        if aspect_ratio < aspect_ratio_min or aspect_ratio > aspect_ratio_max:
-            reasons.append("aspect_ratio_out_of_range")
-            violated_soft_rules.append("aspect_ratio")
-
-        total_features = 4.0
-        score = len(violated_soft_rules) / total_features
-        result = "suspected_defect" if score >= rules.score_threshold else "normal"
+        score = violated_dimensions / 2.0
+        result = "suspected_defect" if violated_dimensions >= 1 else "normal"
         return RuleEvaluation(
             result=result,
             score=score,
@@ -93,7 +72,6 @@ class RuleEngine:
             thresholds=thresholds,
             margins=margins,
             hard_fail=result == "suspected_defect",
-            violated_soft_rules=violated_soft_rules,
         )
 
 

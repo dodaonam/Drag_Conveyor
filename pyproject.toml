@@ -5,17 +5,17 @@ description = "White bar inspection runtime for drag conveyor defect screening."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "ipykernel>=7.2.0",
-    "matplotlib>=3.10.9",
+    "boto3>=1.43.24",
+    "fastapi>=0.115.0",
     "onnx>=1.21.0",
-    "onnxruntime>=1.26.0",
+    "onnxruntime-gpu>=1.26.0",
     "opencv-python>=4.13.0.92",
-    "pyside6>=6.10.0",
-    "ultralytics>=8.4.56",
+    "python-dotenv>=1.2.2",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 [project.scripts]
-drag-conveyor = "drag_conveyor.cli:main"
+drag-conveyor = "drag_conveyor.app.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

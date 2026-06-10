@@ -26,14 +26,12 @@ class CentroidTracker:
         max_jump_px: float,
         ttl_frames: int,
         min_hits: int,
-        direction: str,
         max_reverse_px: float = 5.0,
         max_area_ratio_change: float = 3.0,
     ) -> None:
         self.max_jump_px = max_jump_px
         self.ttl_frames = ttl_frames
         self.min_hits = min_hits
-        self.direction = direction
         self.max_reverse_px = max_reverse_px
         self.max_area_ratio_change = max_area_ratio_change
         self._next_id = 1
@@ -68,7 +66,7 @@ class CentroidTracker:
                     continue
                 if dist[ti, di] > self.max_jump_px:
                     continue
-                if not self._direction_gate(self._tracks[track_id], detections[det_idx]):
+                if not self._movement_gate(self._tracks[track_id], detections[det_idx]):
                     continue
                 if not self._area_gate(self._tracks[track_id], detections[det_idx]):
                     continue
@@ -119,19 +117,10 @@ class CentroidTracker:
         track.area = self._detection_area(det)
         track.detection = det
 
-    def _direction_gate(self, track: TrackedObject, det: Detection) -> bool:
-        prev_x, prev_y = track.centroid_xy
-        curr_x, curr_y = det.centroid_frame_xy
-
-        if self.direction == "top_to_bottom":
-            return curr_y + self.max_reverse_px >= prev_y
-        if self.direction == "bottom_to_top":
-            return curr_y <= prev_y + self.max_reverse_px
-        if self.direction == "left_to_right":
-            return curr_x + self.max_reverse_px >= prev_x
-        if self.direction == "right_to_left":
-            return curr_x <= prev_x + self.max_reverse_px
-        return True
+    def _movement_gate(self, track: TrackedObject, det: Detection) -> bool:
+        prev_y = track.centroid_xy[1]
+        curr_y = det.centroid_frame_xy[1]
+        return curr_y + self.max_reverse_px >= prev_y
 
     def _area_gate(self, track: TrackedObject, det: Detection) -> bool:
         prev_area = max(track.area, 1.0)

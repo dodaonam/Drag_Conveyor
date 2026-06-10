@@ -1,0 +1,63 @@
+{
+  "profile_version": "1.0.0",
+  "profile_name": "line_01",
+  "model": {
+    "path": "weights/best.onnx",
+    "backend": "onnxruntime",
+    "task": "segmentation",
+    "model_family": "yolo-seg",
+    "input_size": 640,
+    "class_names": [
+      "white_bar"
+    ],
+    "conf_threshold": 0.4,
+    "iou_threshold": 0.5,
+    "preprocess": {
+      "type": "letterbox",
+      "normalize": true,
+      "color_format": "RGB"
+    },
+    "output_format": {
+      "type": "yolo_seg_proto",
+      "box_format": "xyxy",
+      "has_objectness": true,
+      "class_encoding": "id",
+      "num_classes": 1,
+      "num_mask_coeffs": 32
+    }
+  },
+  "inspection_region": {
+    "frame_width": 1280,
+    "frame_height": 720,
+    "x": 0,
+    "y": 0,
+    "w": 1280,
+    "h": 720,
+    "trigger_band": {
+      "min_overlap_ratio": 0.1,
+      "pending_ttl_frames": 3,
+      "allow_inside_band_trigger": true
+    }
+  },
+  "tracker": {
+    "type": "centroid",
+    "max_jump_px": 80.0,
+    "ttl_frames": 10,
+    "min_hits": 2
+  },
+  "rules": {
+    "mode": "length_width_auto_baseline"
+  },
+  "calibration": {
+    "target_valid_records": 70,
+    "min_valid_records": 50,
+    "min_inlier_ratio": 0.7,
+    "max_outlier_ratio": 0.3
+  },
+  "calibration_result": null,
+  "logging": {
+    "csv_per_triggered_bar": true,
+    "save_defect_snapshot": true,
+    "save_debug_frames": false
+  }
+}

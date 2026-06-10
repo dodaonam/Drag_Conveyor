@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1d4ed8">
+<title>Kiểm tra băng tải</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --blue:    #2563eb;
+  --blue-dk: #1d4ed8;
+  --green:   #16a34a;
+  --red:     #dc2626;
+  --amber:   #d97706;
+  --cyan:    #0891b2;
+  --bg:      #f1f5f9;
+  --card:    #ffffff;
+  --border:  #e2e8f0;
+  --text:    #1e293b;
+  --muted:   #64748b;
+  --r:       12px;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  -webkit-tap-highlight-color: transparent;
+}
+.s { display: none; min-height: 100svh; flex-direction: column; }
+
+/* ── Layout helpers ─────────────────────────────────────────────────────── */
+.hdr {
+  background: var(--blue); color: #fff;
+  padding: 14px 16px; display: flex; align-items: center; gap: 10px;
+  font-size: 16px; font-weight: 600; flex-shrink: 0;
+}
+.hdr-aux { margin-left: auto; background: none; border: none; color: #fff; font-size: 14px; font-weight: 400; cursor: pointer; padding: 4px 0; }
+.body { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+
+/* ── Card ───────────────────────────────────────────────────────────────── */
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 16px; }
+
+/* ── Forms ──────────────────────────────────────────────────────────────── */
+.lbl { display: block; font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; }
+input[type=text], input[type=password] {
+  width: 100%; padding: 13px 14px; border: 1px solid var(--border); border-radius: 8px;
+  font-size: 16px; color: var(--text); background: #fff; outline: none;
+}
+input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.15); }
+
+/* ── Buttons ────────────────────────────────────────────────────────────── */
+.btn { width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }
+.btn:active { opacity: .8; }
+.btn-primary  { background: var(--blue); color: #fff; }
+.btn-success  { background: var(--green); color: #fff; }
+.btn-outline  { background: #fff; border: 1.5px solid var(--border); color: var(--text); }
+.btn-sm { padding: 10px; font-size: 14px; }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Alerts ─────────────────────────────────────────────────────────────── */
+.err { background: #fef2f2; border: 1px solid #fca5a5; color: var(--red); border-radius: 8px; padding: 11px 13px; font-size: 14px; display: none; }
+.warn-box { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 8px; padding: 11px 13px; font-size: 13px; }
+
+/* ── Login ──────────────────────────────────────────────────────────────── */
+#s-login { justify-content: center; padding: 24px; }
+.login-logo { text-align: center; margin-bottom: 36px; }
+.login-logo h1 { font-size: 22px; font-weight: 700; color: var(--blue); }
+.login-logo p  { font-size: 14px; color: var(--muted); margin-top: 6px; }
+
+/* ── ROI canvas ─────────────────────────────────────────────────────────── */
+#canvas-wrap { position: relative; background: #111; border-radius: 8px; overflow: hidden; line-height: 0; }
+#roi-canvas  { display: block; width: 100%; touch-action: pan-y; cursor: default; }
+#roi-canvas.editing { touch-action: none; cursor: move; }
+#canvas-hint {
+  position: absolute; bottom: 8px; left: 0; right: 0;
+  text-align: center; font-size: 12px; font-weight: 600;
+  color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.9); pointer-events: none;
+}
+.roi-actions { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+.roi-actions .btn-main { flex: 1; }
+.roi-actions .btn-done { width: 48px; min-width: 48px; padding: 10px 0; font-size: 18px; }
+.roi-actions .btn-done.ready { background: var(--green); color: #fff; }
+
+/* ── Upload progress ────────────────────────────────────────────────────── */
+.prog-wrap { background: #e2e8f0; border-radius: 999px; height: 22px; overflow: hidden; }
+.prog-bar  { height: 100%; background: var(--blue); border-radius: 999px; transition: width .25s; width: 0; }
+.prog-pct  { text-align: center; font-size: 28px; font-weight: 800; color: var(--blue); margin-top: 12px; }
+
+/* ── Polling spinner ────────────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { width: 48px; height: 48px; border: 4px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .8s linear infinite; margin: 24px auto 16px; }
+.poll-msg    { font-size: 18px; font-weight: 700; text-align: center; }
+.poll-detail { font-size: 13px; color: var(--muted); text-align: center; margin-top: 5px; }
+
+/* ── Result ─────────────────────────────────────────────────────────────── */
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.stat-box  { background: var(--bg); border-radius: 10px; padding: 16px; text-align: center; }
+.stat-num  { font-size: 38px; font-weight: 800; line-height: 1; }
+.stat-num.ok  { color: var(--green); }
+.stat-num.bad { color: var(--red); }
+.stat-lbl  { font-size: 11px; color: var(--muted); margin-top: 5px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+
+.defects { display: flex; flex-direction: column; gap: 12px; }
+.defect-card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.defect-card img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; background: #000; }
+.defect-info { padding: 10px 12px; }
+.defect-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px; }
+.tag { background: #fef2f2; color: var(--red); font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
+.defect-dims { font-size: 13px; color: var(--muted); }
+
+.ok-banner { text-align: center; padding: 32px 16px; }
+.ok-banner .icon { font-size: 56px; margin-bottom: 12px; }
+.ok-banner h2 { font-size: 20px; font-weight: 700; color: var(--green); }
+.ok-banner p  { font-size: 14px; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     Screen: LOGIN
+═══════════════════════════════════════════════════════════════════ -->
+<div id="s-login" class="s">
+  <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:24px">
+    <div class="login-logo">
+      <div style="font-size:48px;margin-bottom:8px">⚙️</div>
+      <h1>Kiểm tra băng tải</h1>
+      <p>Hệ thống phát hiện lỗi thanh trắng</p>
+    </div>
+    <div class="card">
+      <div style="margin-bottom:14px">
+        <label class="lbl" for="inp-token">Mã truy cập</label>
+        <input type="password" id="inp-token" placeholder="Nhập mã truy cập" autocomplete="current-password">
+      </div>
+      <button class="btn btn-primary" id="btn-login">Đăng nhập</button>
+      <div id="err-login" class="err" style="margin-top:12px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     Screen: SETUP
+═══════════════════════════════════════════════════════════════════ -->
+<div id="s-setup" class="s">
+  <div class="hdr">
+    <span>Tạo kiểm tra mới</span>
+    <button class="hdr-aux" id="btn-logout">Đăng xuất</button>
+  </div>
+  <div class="body">
+
+    <!-- Video picker -->
+    <div class="card">
+      <label class="lbl">Video băng tải</label>
+      <input type="file" id="inp-video" accept="video/*" style="display:none">
+      <button class="btn btn-outline" id="btn-pick">Chọn video từ điện thoại</button>
+      <div id="video-name" style="font-size:13px;color:var(--muted);margin-top:8px;display:none"></div>
+    </div>
+
+    <!-- ROI setup (shown after video selected) -->
+    <div id="roi-section" style="display:none">
+
+      <div class="card" style="padding:12px">
+        <label class="lbl" style="margin-bottom:8px">Vùng kiểm tra (ROI)</label>
+        <div id="canvas-wrap">
+          <canvas id="roi-canvas"></canvas>
+          <div id="canvas-hint">Bấm Chọn vùng chụp để bắt đầu</div>
+        </div>
+        <div class="roi-actions">
+          <button class="btn btn-outline btn-sm btn-main" id="btn-edit-roi">Chọn vùng chụp</button>
+          <button class="btn btn-outline btn-sm btn-done" id="btn-lock-roi" disabled>✓</button>
+          <span id="roi-status" style="font-size:13px;color:var(--muted)">Chưa chọn vùng</span>
+        </div>
+      </div>
+
+      <div id="err-setup" class="err"></div>
+      <button class="btn btn-primary" id="btn-submit" style="padding:16px;font-size:17px">
+        Bắt đầu kiểm tra
+      </button>
+
+    </div><!-- /roi-section -->
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     Screen: UPLOADING
+═══════════════════════════════════════════════════════════════════ -->
+<div id="s-uploading" class="s">
+  <div class="hdr"><span>Đang tải lên</span></div>
+  <div class="body" style="justify-content:center">
+    <div class="card" style="text-align:center;padding:32px 20px">
+      <p style="font-size:15px;color:var(--muted);margin-bottom:20px">Đang tải video lên máy chủ…</p>
+      <div class="prog-wrap"><div class="prog-bar" id="prog-bar"></div></div>
+      <div class="prog-pct" id="prog-pct">0%</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     Screen: POLLING
+═══════════════════════════════════════════════════════════════════ -->
+<div id="s-polling" class="s">
+  <div class="hdr"><span>Đang xử lý</span></div>
+  <div class="body" style="justify-content:center">
+    <div class="card" style="padding:24px 20px">
+      <div class="spinner"></div>
+      <div class="poll-msg" id="poll-msg">Đang chờ xử lý…</div>
+      <div class="poll-detail" id="poll-detail">Xin chờ trong giây lát</div>
+      <div id="err-poll" class="err" style="margin-top:14px"></div>
+      <button class="btn btn-outline btn-sm" id="btn-cancel-poll" style="margin-top:20px">
+        Huỷ và quay lại
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     Screen: RESULT
+═══════════════════════════════════════════════════════════════════ -->
+<div id="s-result" class="s">
+  <div class="hdr"><span>Kết quả kiểm tra</span></div>
+  <div class="body">
+
+    <!-- Summary counts -->
+    <div class="card">
+      <label class="lbl">Tổng kết</label>
+      <div class="stat-grid" id="stat-grid"></div>
+    </div>
+
+    <!-- CSV download -->
+    <a id="csv-link" href="#" target="_blank" style="display:none;text-decoration:none">
+      <button class="btn btn-outline">⬇ Tải dữ liệu đầy đủ (CSV)</button>
+    </a>
+
+    <!-- No defects -->
+    <div id="no-defect" class="card ok-banner" style="display:none">
+      <div class="icon">✅</div>
+      <h2>Không phát hiện lỗi</h2>
+      <p>Tất cả thanh đều đạt tiêu chuẩn</p>
+    </div>
+
+    <!-- Defect gallery -->
+    <div id="defect-section" style="display:none">
+      <div class="card" style="padding:12px 16px 8px">
+        <label class="lbl">Thanh bị lỗi</label>
+      </div>
+      <div class="defects" id="defect-list"></div>
+    </div>
+
+    <button class="btn btn-primary" id="btn-new-job">Kiểm tra tiếp</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ── State ──────────────────────────────────────────────────────────────── */
+const G = {
+  token:      localStorage.getItem('dc_token') || '',
+  jobId:      null,
+  putUrl:     null,
+  file:       null,
+  videoW:     0,
+  videoH:     0,
+  frameOk:    false,
+  roi:        null,      // {x,y,w,h} in canvas px
+  roiMode:    'locked',  // editing | locked
+  dragStart:  null,
+  pollTid:    null,
+};
+
+const TRIGGER_POSITION_RATIO = 0.5;
+const TRIGGER_THICKNESS_RATIO = 0.25;
+
+/* ── Screen navigation ──────────────────────────────────────────────────── */
+function show(id) {
+  document.querySelectorAll('.s').forEach(el => el.style.display = 'none');
+  document.getElementById(id).style.display = 'flex';
+}
+
+/* ── API ────────────────────────────────────────────────────────────────── */
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: {
+      'Authorization': 'Bearer ' + G.token,
+      'Content-Type': 'application/json',
+      ...(opts.headers || {}),
+    },
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('dc_token');
+    G.token = '';
+    show('s-login');
+    setErr('err-login', 'Phiên đã hết hạn hoặc mã không đúng');
+    throw Object.assign(new Error('Unauthorized'), { status: 401 });
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || 'HTTP ' + res.status);
+  }
+  return res.json();
+}
+
+/* ── Error helpers ──────────────────────────────────────────────────────── */
+function setErr(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.style.display = msg ? 'block' : 'none';
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   LOGIN
+═══════════════════════════════════════════════════════════════════ */
+document.getElementById('btn-login').addEventListener('click', async () => {
+  const token = document.getElementById('inp-token').value.trim();
+  setErr('err-login', '');
+  if (!token) { setErr('err-login', 'Vui lòng nhập mã truy cập'); return; }
+  G.token = token;
+  try {
+    const res = await fetch('/api/health', { headers: { 'Authorization': 'Bearer ' + token } });
+    if (res.status === 401) { setErr('err-login', 'Mã truy cập không đúng'); return; }
+  } catch (_) { /* network error — proceed */ }
+  localStorage.setItem('dc_token', token);
+  show('s-setup');
+});
+
+document.getElementById('inp-token').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btn-login').click();
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   LOGOUT
+═══════════════════════════════════════════════════════════════════ */
+document.getElementById('btn-logout').addEventListener('click', () => {
+  localStorage.removeItem('dc_token');
+  G.token = '';
+  show('s-login');
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   VIDEO PICKER + FRAME EXTRACTION
+═══════════════════════════════════════════════════════════════════ */
+const canvas  = document.getElementById('roi-canvas');
+const ctx     = canvas.getContext('2d');
+const videoEl = document.createElement('video');
+videoEl.muted = true; videoEl.playsInline = true; videoEl.preload = 'metadata';
+
+document.getElementById('btn-pick').addEventListener('click', () => {
+  document.getElementById('inp-video').click();
+});
+
+document.getElementById('inp-video').addEventListener('change', function () {
+  const f = this.files[0];
+  if (!f) return;
+  G.file = f; G.roi = null; G.frameOk = false; G.roiMode = 'locked';
+  G.dragStart = null;
+  canvas.classList.remove('editing');
+  document.getElementById('roi-section').style.display = 'block';
+  document.getElementById('video-name').style.display = 'block';
+  document.getElementById('video-name').textContent =
+    f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)';
+  document.getElementById('canvas-hint').textContent = 'Bấm Chọn vùng chụp để bắt đầu';
+  updateRoiStatus();
+  updateRoiControls();
+
+  const url = URL.createObjectURL(f);
+  videoEl.addEventListener('seeked', onFrame, { once: true });
+  videoEl.addEventListener('loadedmetadata', () => {
+    videoEl.currentTime = Math.min(0.5, Math.max(0, (videoEl.duration || 1) - 0.05));
+  }, { once: true });
+  videoEl.src = url;
+  videoEl.load();
+});
+
+function onFrame() {
+  G.videoW = videoEl.videoWidth;
+  G.videoH = videoEl.videoHeight;
+  const displayW = canvas.getBoundingClientRect().width || canvas.offsetWidth || 360;
+  canvas.width  = Math.round(displayW);
+  canvas.height = Math.round(displayW * G.videoH / G.videoW);
+  G.frameOk = true;
+  redraw();
+  updateRoiStatus();
+  updateRoiControls();
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   CANVAS ROI EDITING  (touch + mouse)
+═══════════════════════════════════════════════════════════════════ */
+const MIN_ROI_SIZE = 20;
+const HANDLE_SIZE = 16;
+
+function evXY(e) {
+  const r   = canvas.getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e.changedTouches ? e.changedTouches[0] : e;
+  return {
+    x: (src.clientX - r.left) * (canvas.width  / r.width),
+    y: (src.clientY - r.top)  * (canvas.height / r.height),
+  };
+}
+
+function createDefaultRoi() {
+  G.roi = clampRoi({
+    x: canvas.width * 0.10,
+    y: canvas.height * 0.20,
+    w: canvas.width * 0.80,
+    h: canvas.height * 0.55,
+  });
+}
+
+function isRoiValid() {
+  return Boolean(G.roi && G.roi.w >= MIN_ROI_SIZE && G.roi.h >= MIN_ROI_SIZE);
+}
+
+function clampRoi(roi) {
+  const w = Math.max(MIN_ROI_SIZE, Math.min(roi.w, canvas.width));
+  const h = Math.max(MIN_ROI_SIZE, Math.min(roi.h, canvas.height));
+  return {
+    x: Math.max(0, Math.min(roi.x, canvas.width - w)),
+    y: Math.max(0, Math.min(roi.y, canvas.height - h)),
+    w,
+    h,
+  };
+}
+
+function setRoiEditing() {
+  setErr('err-setup', '');
+  if (!G.frameOk) return;
+  if (!G.roi) createDefaultRoi();
+  G.roiMode = 'editing';
+  G.dragStart = null;
+  canvas.classList.add('editing');
+  updateRoiStatus();
+  updateRoiControls();
+  redraw();
+}
+
+function lockRoi() {
+  setErr('err-setup', '');
+  if (!isRoiValid()) { setErr('err-setup', 'Vùng kiểm tra chưa hợp lệ'); return; }
+  G.roiMode = 'locked';
+  G.dragStart = null;
+  canvas.classList.remove('editing');
+  updateRoiStatus();
+  updateRoiControls();
+  redraw();
+}
+
+function hitTestRoiHandle(p) {
+  if (!G.roi) return null;
+  const x1 = G.roi.x, y1 = G.roi.y, x2 = G.roi.x + G.roi.w, y2 = G.roi.y + G.roi.h;
+  const handles = [
+    ['nw', x1, y1], ['ne', x2, y1], ['sw', x1, y2], ['se', x2, y2],
+    ['n', (x1 + x2) / 2, y1], ['s', (x1 + x2) / 2, y2],
+    ['w', x1, (y1 + y2) / 2], ['e', x2, (y1 + y2) / 2],
+  ];
+  for (const [name, hx, hy] of handles) {
+    if (Math.abs(p.x - hx) <= HANDLE_SIZE && Math.abs(p.y - hy) <= HANDLE_SIZE) return name;
+  }
+  if (p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2) return 'move';
+  return null;
+}
+
+function applyRoiDrag(p) {
+  const start = G.dragStart;
+  if (!start || !G.roi) return;
+  const dx = p.x - start.x;
+  const dy = p.y - start.y;
+  const r = start.roi;
+  let next = { ...r };
+
+  if (start.handle === 'move') {
+    next.x = r.x + dx;
+    next.y = r.y + dy;
+  } else {
+    let left = r.x;
+    let top = r.y;
+    let right = r.x + r.w;
+    let bottom = r.y + r.h;
+    if (start.handle.includes('w')) left += dx;
+    if (start.handle.includes('e')) right += dx;
+    if (start.handle.includes('n')) top += dy;
+    if (start.handle.includes('s')) bottom += dy;
+    left = Math.max(0, Math.min(left, canvas.width - MIN_ROI_SIZE));
+    top = Math.max(0, Math.min(top, canvas.height - MIN_ROI_SIZE));
+    right = Math.max(MIN_ROI_SIZE, Math.min(right, canvas.width));
+    bottom = Math.max(MIN_ROI_SIZE, Math.min(bottom, canvas.height));
+    if (right - left < MIN_ROI_SIZE) {
+      if (start.handle.includes('w')) left = right - MIN_ROI_SIZE;
+      else right = left + MIN_ROI_SIZE;
+    }
+    if (bottom - top < MIN_ROI_SIZE) {
+      if (start.handle.includes('n')) top = bottom - MIN_ROI_SIZE;
+      else bottom = top + MIN_ROI_SIZE;
+    }
+    next = { x: left, y: top, w: right - left, h: bottom - top };
+  }
+
+  G.roi = clampRoi(next);
+  updateRoiStatus();
+  redraw();
+}
+
+function onCanvasPointerStart(e) {
+  if (G.roiMode !== 'editing' || !G.frameOk || !G.roi) return;
+  const p = evXY(e);
+  const handle = hitTestRoiHandle(p);
+  if (!handle) return;
+  e.preventDefault();
+  G.dragStart = { x: p.x, y: p.y, roi: { ...G.roi }, handle };
+}
+
+function onCanvasPointerMove(e) {
+  if (G.roiMode !== 'editing' || !G.dragStart) return;
+  e.preventDefault();
+  const p = evXY(e);
+  applyRoiDrag(p);
+}
+
+function onCanvasPointerEnd(e) {
+  if (G.roiMode !== 'editing' || !G.dragStart) return;
+  e.preventDefault();
+  G.dragStart = null;
+  updateRoiControls();
+}
+
+canvas.addEventListener('touchstart', onCanvasPointerStart, { passive: false });
+canvas.addEventListener('touchmove',  onCanvasPointerMove,  { passive: false });
+canvas.addEventListener('touchend',   onCanvasPointerEnd,   { passive: false });
+canvas.addEventListener('mousedown',  onCanvasPointerStart);
+canvas.addEventListener('mousemove',  onCanvasPointerMove);
+canvas.addEventListener('mouseup',    onCanvasPointerEnd);
+canvas.addEventListener('mouseleave', onCanvasPointerEnd);
+
+document.getElementById('btn-edit-roi').addEventListener('click', setRoiEditing);
+document.getElementById('btn-lock-roi').addEventListener('click', lockRoi);
+
+function updateRoiStatus() {
+  const el = document.getElementById('roi-status');
+  if (!G.roi || !isRoiValid()) {
+    el.textContent = 'Chưa chọn vùng';
+    el.style.color = 'var(--amber)';
+    document.getElementById('canvas-hint').textContent = G.frameOk ? 'Bấm Chọn vùng chụp để bắt đầu' : '';
+  } else if (G.roiMode === 'editing') {
+    const v = toVideo(G.roi);
+    el.textContent = 'Đang chỉnh: ' + v.w + '×' + v.h + ' px';
+    el.style.color = 'var(--blue)';
+    document.getElementById('canvas-hint').textContent = 'Kéo trong vùng để di chuyển, kéo nút để đổi kích thước';
+  } else {
+    const v = toVideo(G.roi);
+    el.textContent = 'Đã khóa: ' + v.w + '×' + v.h + ' px';
+    el.style.color = 'var(--green)';
+    document.getElementById('canvas-hint').textContent = 'Vùng kiểm tra đã khóa';
+  }
+}
+
+function updateRoiControls() {
+  const editBtn = document.getElementById('btn-edit-roi');
+  const lockBtn = document.getElementById('btn-lock-roi');
+  const canEdit = G.frameOk;
+  const editing = G.roiMode === 'editing';
+  const valid = isRoiValid();
+  editBtn.disabled = !canEdit;
+  editBtn.textContent = valid ? 'Chỉnh sửa vùng' : 'Chọn vùng chụp';
+  lockBtn.disabled = !editing || !valid;
+  lockBtn.classList.toggle('ready', editing && valid);
+  document.getElementById('btn-submit').disabled = !(valid && G.roiMode === 'locked');
+}
+
+function redraw() {
+  if (!G.frameOk) return;
+  ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+  if (!G.roi) return;
+
+  // Dim outside ROI
+  ctx.fillStyle = 'rgba(0,0,0,.45)';
+  ctx.fillRect(0, 0, canvas.width, G.roi.y);
+  ctx.fillRect(0, G.roi.y, G.roi.x, G.roi.h);
+  ctx.fillRect(G.roi.x + G.roi.w, G.roi.y, canvas.width - G.roi.x - G.roi.w, G.roi.h);
+  ctx.fillRect(0, G.roi.y + G.roi.h, canvas.width, canvas.height - G.roi.y - G.roi.h);
+
+  // ROI border
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = 2;
+  ctx.setLineDash(G.roiMode === 'editing' ? [6, 3] : []);
+  ctx.strokeRect(G.roi.x + 1, G.roi.y + 1, G.roi.w - 2, G.roi.h - 2);
+
+  // Trigger band fill
+  const cy = G.roi.y + G.roi.h * TRIGGER_POSITION_RATIO;
+  const ht = G.roi.h * TRIGGER_THICKNESS_RATIO / 2;
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(34,211,238,.28)';
+  ctx.fillRect(G.roi.x, cy - ht, G.roi.w, ht * 2);
+
+  // Band border
+  ctx.strokeStyle = '#22d3ee';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(G.roi.x, cy - ht, G.roi.w, ht * 2);
+
+  // Band centre line
+  ctx.strokeStyle = '#06b6d4';
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(G.roi.x, cy); ctx.lineTo(G.roi.x + G.roi.w, cy);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (G.roiMode === 'editing') drawRoiHandles();
+}
+
+function drawRoiHandles() {
+  const x1 = G.roi.x, y1 = G.roi.y, x2 = G.roi.x + G.roi.w, y2 = G.roi.y + G.roi.h;
+  const points = [
+    [x1, y1], [x2, y1], [x1, y2], [x2, y2],
+    [(x1 + x2) / 2, y1], [(x1 + x2) / 2, y2],
+    [x1, (y1 + y2) / 2], [x2, (y1 + y2) / 2],
+  ];
+  ctx.fillStyle = '#16a34a';
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2;
+  for (const [x, y] of points) {
+    ctx.beginPath();
+    ctx.rect(x - 5, y - 5, 10, 10);
+    ctx.fill();
+    ctx.stroke();
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   COORDINATE CONVERSION
+═══════════════════════════════════════════════════════════════════ */
+function toVideo(roi) {
+  const scaleX = G.videoW / canvas.width;
+  const scaleY = G.videoH / canvas.height;
+  return {
+    x: Math.round(roi.x * scaleX),
+    y: Math.round(roi.y * scaleY),
+    w: Math.max(1, Math.round(roi.w * scaleX)),
+    h: Math.max(1, Math.round(roi.h * scaleY)),
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   SUBMIT → CREATE JOB
+═══════════════════════════════════════════════════════════════════ */
+document.getElementById('btn-submit').addEventListener('click', async () => {
+  setErr('err-setup', '');
+  if (!G.file)                          { setErr('err-setup', 'Chưa chọn video'); return; }
+  if (!G.roi || !isRoiValid())
+                                        { setErr('err-setup', 'Chưa chọn vùng kiểm tra, hoặc vùng quá nhỏ'); return; }
+  if (G.roiMode !== 'locked')           { setErr('err-setup', 'Vui lòng bấm ✓ để xác nhận vùng kiểm tra trước khi bắt đầu.'); return; }
+
+  const mime = getMime(G.file);
+  if (!mime)                            { setErr('err-setup', 'Định dạng video không được hỗ trợ (mp4/mov/webm)'); return; }
+
+  const vRoi = toVideo(G.roi);
+  // Clamp to actual frame bounds
+  vRoi.w = Math.min(vRoi.w, G.videoW - vRoi.x);
+  vRoi.h = Math.min(vRoi.h, G.videoH - vRoi.y);
+
+  const body = {
+    content_type: mime,
+    size_bytes:   G.file.size,
+    filename:     G.file.name,
+    roi: {
+      x: vRoi.x, y: vRoi.y, w: vRoi.w, h: vRoi.h,
+      frame_width:  G.videoW,
+      frame_height: G.videoH,
+    },
+  };
+
+  try {
+    const data = await api('/api/jobs', { method: 'POST', body: JSON.stringify(body) });
+    G.jobId  = data.job_id;
+    G.putUrl = data.presigned_put_url;
+    doUpload(mime);
+  } catch (e) {
+    if (e.status !== 401) setErr('err-setup', e.message);
+  }
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   UPLOAD VIDEO → R2 (direct XHR PUT)
+═══════════════════════════════════════════════════════════════════ */
+function doUpload(mime) {
+  show('s-uploading');
+  const bar = document.getElementById('prog-bar');
+  const pct = document.getElementById('prog-pct');
+  bar.style.width = '0'; pct.textContent = '0%';
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('PUT', G.putUrl);
+  xhr.setRequestHeader('Content-Type', mime);
+
+  xhr.upload.addEventListener('progress', e => {
+    if (e.lengthComputable) {
+      const p = Math.round(e.loaded / e.total * 100);
+      bar.style.width = p + '%';
+      pct.textContent = p + '%';
+    }
+  });
+
+  xhr.addEventListener('load', async () => {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      try {
+        await api('/api/jobs/' + G.jobId + '/upload-complete', { method: 'POST' });
+        startPolling();
+      } catch (e) {
+        if (e.status !== 401) {
+          show('s-setup');
+          setErr('err-setup', 'Xác nhận upload thất bại: ' + e.message);
+        }
+      }
+    } else {
+      show('s-setup');
+      setErr('err-setup', 'Upload thất bại (HTTP ' + xhr.status + ')');
+    }
+  });
+
+  xhr.addEventListener('error', () => {
+    show('s-setup');
+    setErr('err-setup', 'Lỗi kết nối khi tải lên R2');
+  });
+
+  xhr.send(G.file);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   POLLING
+═══════════════════════════════════════════════════════════════════ */
+function startPolling() {
+  show('s-polling');
+  setErr('err-poll', '');
+  document.getElementById('poll-msg').textContent    = 'Đang chờ xử lý…';
+  document.getElementById('poll-detail').textContent = 'Xin chờ trong giây lát';
+  clearTimeout(G.pollTid);
+  doPoll();
+}
+
+async function doPoll() {
+  try {
+    const data = await api('/api/jobs/' + G.jobId + '/status');
+    document.getElementById('poll-msg').textContent    = data.message;
+    document.getElementById('poll-detail').textContent = 'Trạng thái: ' + data.status;
+
+    if (data.status === 'completed') { await loadResult(); return; }
+
+    if (data.status === 'failed' || data.status === 'upload_expired') {
+      // Stop spinner, show error, keep cancel button
+      document.querySelector('#s-polling .spinner').style.display = 'none';
+      setErr('err-poll', data.message);
+      return;
+    }
+    G.pollTid = setTimeout(doPoll, 2500);
+  } catch (e) {
+    if (e.status === 401) return;
+    G.pollTid = setTimeout(doPoll, 3000);
+  }
+}
+
+document.getElementById('btn-cancel-poll').addEventListener('click', () => {
+  clearTimeout(G.pollTid);
+  document.querySelector('#s-polling .spinner').style.display = '';
+  show('s-setup');
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   RESULT
+═══════════════════════════════════════════════════════════════════ */
+const REASONS = {
+  length_too_short: 'Quá ngắn',
+  length_too_long:  'Quá dài',
+  width_too_small:  'Quá hẹp',
+  width_too_large:  'Quá rộng',
+};
+
+async function loadResult() {
+  const data = await api('/api/jobs/' + G.jobId + '/result');
+  show('s-result');
+
+  // Stats
+  document.getElementById('stat-grid').innerHTML =
+    statBox(data.total_bars, 'Tổng thanh', '') +
+    statBox(data.defect_bars, 'Thanh lỗi', data.defect_bars > 0 ? 'bad' : 'ok');
+
+  // CSV
+  const csvEl = document.getElementById('csv-link');
+  if (data.csv_url) { csvEl.href = data.csv_url; csvEl.style.display = 'block'; }
+  else csvEl.style.display = 'none';
+
+  // Defects
+  const defects = data.defects || [];
+  if (defects.length === 0) {
+    document.getElementById('no-defect').style.display    = 'block';
+    document.getElementById('defect-section').style.display = 'none';
+  } else {
+    document.getElementById('no-defect').style.display    = 'none';
+    document.getElementById('defect-section').style.display = 'block';
+    document.getElementById('defect-list').innerHTML = defects.map(d => `
+      <div class="defect-card">
+        ${d.snapshot_url
+          ? `<img src="${esc(d.snapshot_url)}" loading="lazy" alt="Track ${d.track_id}">`
+          : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
+        <div class="defect-info">
+          <div class="defect-tags">
+            ${(d.reasons || []).map(r => `<span class="tag">${REASONS[r] || r}</span>`).join('')}
+          </div>
+          <div class="defect-dims">
+            Track #${d.track_id}
+            &nbsp;·&nbsp; Dài: ${(d.length || 0).toFixed(1)}
+            &nbsp;·&nbsp; Rộng: ${(d.width || 0).toFixed(1)}
+          </div>
+        </div>
+      </div>`).join('');
+  }
+}
+
+function statBox(n, lbl, cls) {
+  return `<div class="stat-box"><div class="stat-num ${cls}">${n}</div><div class="stat-lbl">${lbl}</div></div>`;
+}
+
+document.getElementById('btn-new-job').addEventListener('click', () => {
+  G.jobId = null; G.putUrl = null; G.file = null;
+  G.roi = null; G.frameOk = false; G.roiMode = 'locked';
+  G.dragStart = null;
+  canvas.classList.remove('editing');
+  document.getElementById('inp-video').value = '';
+  document.getElementById('roi-section').style.display = 'none';
+  document.getElementById('video-name').style.display  = 'none';
+  setErr('err-setup', '');
+  updateRoiControls();
+  show('s-setup');
+});
+
+/* ══════════════════════════════════════════════════════════════════
+   HELPERS
+═══════════════════════════════════════════════════════════════════ */
+function getMime(file) {
+  if (file.type && file.type.startsWith('video/')) {
+    const t = file.type;
+    if (['video/mp4','video/webm','video/quicktime'].includes(t)) return t;
+  }
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  return { mp4:'video/mp4', m4v:'video/mp4', mov:'video/quicktime', webm:'video/webm' }[ext] || null;
+}
+
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/* ── Init ───────────────────────────────────────────────────────────────── */
+updateRoiControls();
+show(G.token ? 's-setup' : 's-login');
+</script>
+</body>
+</html>

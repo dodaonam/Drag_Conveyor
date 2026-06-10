@@ -8,8 +8,8 @@ import numpy as np
 
 from ..config import CalibrationResult, FeatureStats, Profile
 
-CRITICAL_FEATURES = ["area", "length", "width", "aspect_ratio"]
-ALL_FEATURES = ["area", "length", "width", "aspect_ratio"]
+CRITICAL_FEATURES = ["length", "width"]
+ALL_FEATURES = ["length", "width"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,17 +155,6 @@ def _feature_stats(values: list[float]) -> FeatureStats:
 def _apply_calibration_to_profile(profile: Profile, result: CalibrationResult) -> Profile:
     updated = copy.deepcopy(profile)
     updated.calibration_result = result
-
-    updated.rules.soft_rules.area_min.value = _lower(result.features["area"])
-    updated.rules.soft_rules.length_min.value = _lower(result.features["length"])
-
-    if updated.rules.soft_rules.width_range.active:
-        updated.rules.soft_rules.width_range.min = _lower(result.features["width"])
-        updated.rules.soft_rules.width_range.max = _upper(result.features["width"])
-
-    updated.rules.soft_rules.aspect_ratio_range.min = _lower(result.features["aspect_ratio"])
-    updated.rules.soft_rules.aspect_ratio_range.max = _upper(result.features["aspect_ratio"])
-
     return updated
 
 

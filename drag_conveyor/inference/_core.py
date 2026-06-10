@@ -57,7 +57,7 @@ class InferenceEngine(Protocol):
 
 class OnnxRuntimeEngine:
     def __init__(self, providers: list[str] | None = None) -> None:
-        self.providers = providers or ["CPUExecutionProvider"]
+        self.providers = providers or ["CUDAExecutionProvider", "CPUExecutionProvider"]
         self._session: Any | None = None
         self._input_name: str | None = None
         self._model_spec: ModelConfig | None = None
@@ -214,82 +214,9 @@ def postprocess_segmentation(
     return detections  # type: ignore[return-value]
 
 
-def _model_box_to_roi_xyxy(
-    box_xyxy: np.ndarray,
-    preprocess: PreprocessResult,
-) -> tuple[float, float, float, float]:
-    x1 = (float(box_xyxy[0]) - preprocess.pad_x) / preprocess.scale
-    y1 = (float(box_xyxy[1]) - preprocess.pad_y) / preprocess.scale
-    x2 = (float(box_xyxy[2]) - preprocess.pad_x) / preprocess.scale
-    y2 = (float(box_xyxy[3]) - preprocess.pad_y) / preprocess.scale
-
-    roi_h, roi_w = preprocess.roi_shape
-    x1 = float(np.clip(x1, 0, roi_w - 1))
-    y1 = float(np.clip(y1, 0, roi_h - 1))
-    x2 = float(np.clip(x2, 0, roi_w))
-    y2 = float(np.clip(y2, 0, roi_h))
-
-    if x2 < x1:
-        x1, x2 = x2, x1
-    if y2 < y1:
-        y1, y2 = y2, y1
-    return x1, y1, x2, y2
-
-
-def _undo_letterbox_mask(mask_input: np.ndarray, preprocess: PreprocessResult) -> np.ndarray:
-    roi_h, roi_w = preprocess.roi_shape
-    resized_w = int(round(roi_w * preprocess.scale))
-    resized_h = int(round(roi_h * preprocess.scale))
-    x1 = int(round(preprocess.pad_x))
-    y1 = int(round(preprocess.pad_y))
-    crop = mask_input[y1 : y1 + resized_h, x1 : x1 + resized_w]
-    if crop.size == 0:
-        return np.zeros((roi_h, roi_w), dtype=np.float32)
-    return cv2.resize(crop, (roi_w, roi_h), interpolation=cv2.INTER_LINEAR)
-
-
-def _nms_xyxy(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np.ndarray:
-    if len(boxes) == 0:
-        return np.array([], dtype=np.int64)
-
-    x1 = boxes[:, 0]
-    y1 = boxes[:, 1]
-    x2 = boxes[:, 2]
-    y2 = boxes[:, 3]
-
-    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
-    order = scores.argsort()[::-1]
-    keep: list[int] = []
-
-    while order.size > 0:
-        i = int(order[0])
-        keep.append(i)
-
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-
-        inter_w = np.maximum(0.0, xx2 - xx1)
-        inter_h = np.maximum(0.0, yy2 - yy1)
-        inter = inter_w * inter_h
-
-        union = areas[i] + areas[order[1:]] - inter
-        iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
-
-        remaining = np.where(iou <= iou_threshold)[0]
-        order = order[remaining + 1]
-
-    return np.array(keep, dtype=np.int64)
-
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _sigmoid(x: np.ndarray) -> np.ndarray:
-    return 1.0 / (1.0 + np.exp(-x))
