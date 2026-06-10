@@ -112,11 +112,38 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
 
 .defects { display: flex; flex-direction: column; gap: 12px; }
 .defect-card { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.defect-card img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; background: #000; }
+.defect-card img { width: 100%; display: block; aspect-ratio: 16/9; object-fit: cover; background: #000; cursor: zoom-in; }
 .defect-info { padding: 10px 12px; }
 .defect-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px; }
 .tag { background: #fef2f2; color: var(--red); font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
 .defect-dims { font-size: 13px; color: var(--muted); }
+
+.lightbox {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(15, 23, 42, .86);
+  display: none; align-items: center; justify-content: center;
+  padding: 18px;
+}
+.lightbox.open { display: flex; }
+.lightbox-panel {
+  position: relative; width: min(96vw, 1400px);
+  max-height: 92vh;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.lightbox-close {
+  position: absolute; top: 10px; right: 10px; z-index: 2;
+  width: 42px; height: 42px; border: none; border-radius: 999px;
+  background: rgba(15, 23, 42, .74); color: #fff; font-size: 24px;
+  cursor: pointer;
+}
+.lightbox-image {
+  width: 100%; max-height: calc(92vh - 54px);
+  object-fit: contain; border-radius: 14px; background: #020617;
+  border: 1px solid rgba(148, 163, 184, .25);
+}
+.lightbox-meta {
+  color: #e2e8f0; font-size: 14px; text-align: center;
+}
 
 .ok-banner { text-align: center; padding: 32px 16px; }
 .ok-banner .icon { font-size: 56px; margin-bottom: 12px; }
@@ -306,6 +333,14 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
   </div>
 </div>
 
+<div id="lightbox" class="lightbox" aria-hidden="true">
+  <div class="lightbox-panel">
+    <button class="lightbox-close" id="lightbox-close" type="button" aria-label="Đóng ảnh">×</button>
+    <img id="lightbox-image" class="lightbox-image" alt="Ảnh lỗi phóng to">
+    <div id="lightbox-meta" class="lightbox-meta"></div>
+  </div>
+</div>
+
 <script>
 'use strict';
 
@@ -322,6 +357,7 @@ const G = {
   roiMode:    'locked',  // editing | locked
   dragStart:  null,
   pollTid:    null,
+  lightboxOpen: false,
 };
 
 const TRIGGER_POSITION_RATIO = 0.5;
@@ -852,7 +888,15 @@ async function loadResult() {
     document.getElementById('defect-list').innerHTML = defects.map(d => `
       <div class="defect-card">
         ${d.snapshot_url
-          ? `<img src="${esc(d.snapshot_url)}" loading="lazy" alt="Track ${d.track_id}">`
+          ? `<img
+               src="${esc(d.snapshot_url)}"
+               loading="lazy"
+               alt="Track ${d.track_id}"
+               class="defect-preview"
+               data-fullsrc="${esc(d.snapshot_url)}"
+               data-track="${esc(String(d.track_id))}"
+               data-length="${esc(((d.length || 0).toFixed(1)))}"
+               data-width="${esc(((d.width || 0).toFixed(1)))}">`
           : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
         <div class="defect-info">
           <div class="defect-tags">
@@ -900,6 +944,37 @@ function getMime(file) {
 function esc(s) {
   return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+
+function openLightbox(src, meta) {
+  document.getElementById('lightbox-image').src = src;
+  document.getElementById('lightbox-meta').textContent = meta;
+  document.getElementById('lightbox').classList.add('open');
+  document.getElementById('lightbox').setAttribute('aria-hidden', 'false');
+  G.lightboxOpen = true;
+}
+
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lightbox').setAttribute('aria-hidden', 'true');
+  document.getElementById('lightbox-image').src = '';
+  document.getElementById('lightbox-meta').textContent = '';
+  G.lightboxOpen = false;
+}
+
+document.getElementById('defect-list').addEventListener('click', e => {
+  const img = e.target.closest('.defect-preview');
+  if (!img) return;
+  const meta = `Track #${img.dataset.track} · Dài: ${img.dataset.length} · Rộng: ${img.dataset.width}`;
+  openLightbox(img.dataset.fullsrc, meta);
+});
+
+document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+document.getElementById('lightbox').addEventListener('click', e => {
+  if (e.target.id === 'lightbox') closeLightbox();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && G.lightboxOpen) closeLightbox();
+});
 
 /* ── Init ───────────────────────────────────────────────────────────────── */
 updateRoiControls();
