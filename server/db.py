@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Generator
 
 DB_PATH = Path(__file__).parent / "jobs.db"
+_DEFAULT_INSPECTION_MODE = "auto_baseline"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -17,10 +18,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     object_key          TEXT,
     content_type        TEXT,
     size_bytes          INTEGER,
+    inspection_mode     TEXT NOT NULL DEFAULT 'auto_baseline',
     roi_config_json     TEXT,
     upload_completed_at TEXT,
     result_summary_json TEXT,
-    result_csv_key      TEXT,
     error_message       TEXT
 );
 """
@@ -29,6 +30,103 @@ CREATE TABLE IF NOT EXISTS jobs (
 def init_db() -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.executescript(_SCHEMA)
+        _migrate_jobs_table(conn)
+        _ensure_inspection_mode_column(conn)
+        _strip_csv_keys_from_summaries(conn)
+
+
+def _job_columns(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("PRAGMA table_info(jobs)").fetchall()
+    return [str(row[1]) for row in rows]
+
+
+def _migrate_jobs_table(conn: sqlite3.Connection) -> None:
+    columns = _job_columns(conn)
+    if "result_csv_key" not in columns:
+        return
+
+    conn.executescript(
+        """
+        ALTER TABLE jobs RENAME TO jobs_old;
+        CREATE TABLE jobs (
+            job_id              TEXT PRIMARY KEY,
+            status              TEXT NOT NULL,
+            created_at          TEXT NOT NULL,
+            updated_at          TEXT NOT NULL,
+            object_key          TEXT,
+            content_type        TEXT,
+            size_bytes          INTEGER,
+            inspection_mode     TEXT NOT NULL DEFAULT 'auto_baseline',
+            roi_config_json     TEXT,
+            upload_completed_at TEXT,
+            result_summary_json TEXT,
+            error_message       TEXT
+        );
+        INSERT INTO jobs (
+            job_id,
+            status,
+            created_at,
+            updated_at,
+            object_key,
+            content_type,
+            size_bytes,
+            inspection_mode,
+            roi_config_json,
+            upload_completed_at,
+            result_summary_json,
+            error_message
+        )
+        SELECT
+            job_id,
+            status,
+            created_at,
+            updated_at,
+            object_key,
+            content_type,
+            size_bytes,
+            'auto_baseline',
+            roi_config_json,
+            upload_completed_at,
+            result_summary_json,
+            error_message
+        FROM jobs_old;
+        DROP TABLE jobs_old;
+        """
+    )
+
+
+def _ensure_inspection_mode_column(conn: sqlite3.Connection) -> None:
+    columns = _job_columns(conn)
+    if "inspection_mode" in columns:
+        return
+    conn.execute(
+        "ALTER TABLE jobs ADD COLUMN inspection_mode TEXT NOT NULL DEFAULT 'auto_baseline'"
+    )
+
+
+def _strip_csv_keys_from_summaries(conn: sqlite3.Connection) -> None:
+    rows = conn.execute(
+        "SELECT job_id, result_summary_json FROM jobs WHERE result_summary_json IS NOT NULL"
+    ).fetchall()
+    updates: list[tuple[str, str]] = []
+    for job_id, payload in rows:
+        if payload is None:
+            continue
+        try:
+            summary = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(summary, dict):
+            continue
+        changed = summary.pop("csv_key", None) is not None
+        changed = summary.pop("csv_url", None) is not None or changed
+        if changed:
+            updates.append((json.dumps(summary), str(job_id)))
+    if updates:
+        conn.executemany(
+            "UPDATE jobs SET result_summary_json=? WHERE job_id=?",
+            updates,
+        )
 
 
 @contextmanager
@@ -49,6 +147,7 @@ def create_job(
     object_key: str,
     content_type: str,
     size_bytes: int,
+    inspection_mode: str = _DEFAULT_INSPECTION_MODE,
     roi_config: dict,
     now: str,
 ) -> None:
@@ -56,11 +155,11 @@ def create_job(
         conn.execute(
             """INSERT INTO jobs
                (job_id, status, created_at, updated_at, object_key,
-                content_type, size_bytes, roi_config_json)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                content_type, size_bytes, inspection_mode, roi_config_json)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 job_id, status, now, now, object_key,
-                content_type, size_bytes, json.dumps(roi_config),
+                content_type, size_bytes, inspection_mode, json.dumps(roi_config),
             ),
         )
 
@@ -120,7 +219,6 @@ def save_result(
     *,
     job_id: str,
     summary: dict,
-    csv_key: str,
     now: str,
     success: bool,
 ) -> None:
@@ -129,10 +227,9 @@ def save_result(
     with _conn() as conn:
         conn.execute(
             """UPDATE jobs
-               SET result_summary_json=?, result_csv_key=?, status=?,
-                   error_message=?, updated_at=?
+               SET result_summary_json=?, status=?, error_message=?, updated_at=?
                WHERE job_id=?""",
-            (json.dumps(summary), csv_key, status, error, now, job_id),
+            (json.dumps(summary), status, error, now, job_id),
         )
 
 

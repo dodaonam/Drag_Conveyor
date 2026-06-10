@@ -16,6 +16,7 @@ import db
 import r2
 import settings
 import worker
+from drag_conveyor.inspection_modes import DEFAULT_INSPECTION_MODE, is_supported_inspection_mode
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
@@ -99,6 +100,14 @@ class CreateJobIn(BaseModel):
     size_bytes: int
     filename: str
     roi: RoiIn
+    inspection_mode: str = DEFAULT_INSPECTION_MODE
+
+    @field_validator("inspection_mode")
+    @classmethod
+    def _check_inspection_mode(cls, v: str) -> str:
+        if not is_supported_inspection_mode(v):
+            raise ValueError(f"unsupported inspection_mode: {v}")
+        return v
 
 
 class CreateJobOut(BaseModel):
@@ -159,6 +168,7 @@ def create_job(body: CreateJobIn) -> CreateJobOut:
         object_key=object_key,
         content_type=body.content_type,
         size_bytes=body.size_bytes,
+        inspection_mode=body.inspection_mode,
         roi_config=roi.model_dump(),
         now=now,
     )
@@ -209,11 +219,10 @@ def get_result(job_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=f"Job not completed: {row['status']}")
 
     summary: dict = json.loads(row["result_summary_json"])
+    summary.pop("csv_key", None)
+    summary.pop("csv_url", None)
 
     # Generate presigned GET URLs for each asset
-    if row["result_csv_key"]:
-        summary["csv_url"] = r2.presigned_get_url(row["result_csv_key"], settings.PRESIGNED_GET_EXPIRES)
-
     for defect in summary.get("defects", []):
         key = defect.get("snapshot_key")
         if key:

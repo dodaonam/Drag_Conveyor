@@ -13,6 +13,7 @@ import cv2
 import db
 import r2
 import settings
+from drag_conveyor.inspection_modes import DEFAULT_INSPECTION_MODE
 
 LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def wake() -> None:
 
 # ── Summary builder ───────────────────────────────────────────────────────────
 
-def _build_summary(result, csv_key: str, snapshot_keys: list[str]) -> dict:
+def _build_summary(result, snapshot_keys: list[str]) -> dict:
     defects = []
     for bar in result.bars:
         if bar.result != "suspected_defect":
@@ -53,7 +54,6 @@ def _build_summary(result, csv_key: str, snapshot_keys: list[str]) -> dict:
         "outlier_count": result.outlier_count,
         "inlier_ratio": result.inlier_ratio,
         "failure_reason": result.failure_reason,
-        "csv_key": csv_key,
         "defects": defects,
     }
 
@@ -75,6 +75,7 @@ def _process_job(job_id: str) -> None:
         return
 
     roi_config: dict = json.loads(row["roi_config_json"])
+    inspection_mode = str(row["inspection_mode"] or DEFAULT_INSPECTION_MODE)
     temp_job_dir = settings.TEMP_DIR / job_id
 
     try:
@@ -98,7 +99,6 @@ def _process_job(job_id: str) -> None:
         profile = profile.with_roi(roi_config)
 
         # 4. Run batch inspection
-        temp_logs = temp_job_dir / "logs"
         temp_snapshots = temp_job_dir / "snapshots"
         LOGGER.info("[%s] Starting inspection", job_id)
         result = run_batch_inspection(
@@ -106,8 +106,8 @@ def _process_job(job_id: str) -> None:
             source=str(video_path),
             model_path=str(settings.MODEL_PATH),
             run_id=job_id,
-            logs_dir=temp_logs,
             defect_snapshots_root=temp_snapshots,
+            inspection_mode=inspection_mode,
         )
         LOGGER.info(
             "[%s] Inspection done: success=%s, total=%d, defects=%d",
@@ -115,12 +115,6 @@ def _process_job(job_id: str) -> None:
         )
 
         # 5. Upload results to R2 — MUST happen before any cleanup
-        csv_key = ""
-        if result.csv_path and result.csv_path.exists():
-            csv_key = f"results/{job_id}/result.csv"
-            r2.upload_file(result.csv_path, csv_key, "text/csv")
-            LOGGER.info("[%s] CSV uploaded: %s", job_id, csv_key)
-
         snapshot_keys: list[str] = []
         if result.defect_snapshots_dir and result.defect_snapshots_dir.exists():
             for img in sorted(result.defect_snapshots_dir.glob("*.jpg")):
@@ -130,11 +124,10 @@ def _process_job(job_id: str) -> None:
             LOGGER.info("[%s] Snapshots uploaded: %d", job_id, len(snapshot_keys))
 
         # 6. Save summary + mark completed (or failed if inspection itself failed)
-        summary = _build_summary(result, csv_key, snapshot_keys)
+        summary = _build_summary(result, snapshot_keys)
         db.save_result(
             job_id=job_id,
             summary=summary,
-            csv_key=csv_key,
             now=_now(),
             success=result.success,
         )

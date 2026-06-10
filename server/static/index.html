@@ -42,11 +42,11 @@ body {
 
 /* ── Forms ──────────────────────────────────────────────────────────────── */
 .lbl { display: block; font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .06em; }
-input[type=text], input[type=password] {
+input[type=text], input[type=password], select {
   width: 100%; padding: 13px 14px; border: 1px solid var(--border); border-radius: 8px;
   font-size: 16px; color: var(--text); background: #fff; outline: none;
 }
-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.15); }
+input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.15); }
 
 /* ── Buttons ────────────────────────────────────────────────────────────── */
 .btn { width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; }
@@ -155,6 +155,17 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.1
       <div id="video-name" style="font-size:13px;color:var(--muted);margin-top:8px;display:none"></div>
     </div>
 
+    <div class="card">
+      <label class="lbl" for="sel-inspection-mode">Chế độ đo</label>
+      <select id="sel-inspection-mode">
+        <option value="auto_baseline">Tự động theo chuẩn lô hiện tại</option>
+        <option value="average_ratio">So với kích thước trung bình</option>
+      </select>
+      <div style="font-size:13px;color:var(--muted);margin-top:8px">
+        Chế độ trung bình dùng ngưỡng dài 0.99 - 1.01 và rộng 0.9 - 1.1.
+      </div>
+    </div>
+
     <!-- ROI setup (shown after video selected) -->
     <div id="roi-section" style="display:none">
 
@@ -224,11 +235,6 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.1
       <label class="lbl">Tổng kết</label>
       <div class="stat-grid" id="stat-grid"></div>
     </div>
-
-    <!-- CSV download -->
-    <a id="csv-link" href="#" target="_blank" style="display:none;text-decoration:none">
-      <button class="btn btn-outline">⬇ Tải dữ liệu đầy đủ (CSV)</button>
-    </a>
 
     <!-- No defects -->
     <div id="no-defect" class="card ok-banner" style="display:none">
@@ -662,6 +668,7 @@ document.getElementById('btn-submit').addEventListener('click', async () => {
     content_type: mime,
     size_bytes:   G.file.size,
     filename:     G.file.name,
+    inspection_mode: document.getElementById('sel-inspection-mode').value,
     roi: {
       x: vRoi.x, y: vRoi.y, w: vRoi.w, h: vRoi.h,
       frame_width:  G.videoW,
@@ -782,11 +789,6 @@ async function loadResult() {
   document.getElementById('stat-grid').innerHTML =
     statBox(data.total_bars, 'Tổng thanh', '') +
     statBox(data.defect_bars, 'Thanh lỗi', data.defect_bars > 0 ? 'bad' : 'ok');
-
-  // CSV
-  const csvEl = document.getElementById('csv-link');
-  if (data.csv_url) { csvEl.href = data.csv_url; csvEl.style.display = 'block'; }
-  else csvEl.style.display = 'none';
 
   // Defects
   const defects = data.defects || [];
