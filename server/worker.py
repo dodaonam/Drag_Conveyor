@@ -10,6 +10,10 @@ from pathlib import Path
 
 import cv2
 
+from path_bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 import db
 import r2
 import settings

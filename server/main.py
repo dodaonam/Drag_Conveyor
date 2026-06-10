@@ -12,6 +12,10 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from path_bootstrap import ensure_repo_root_on_path
+
+ensure_repo_root_on_path()
+
 import db
 import r2
 import settings
