@@ -113,7 +113,6 @@ class CalibrationResult:
 
 @dataclass(slots=True)
 class LoggingConfig:
-    csv_per_triggered_bar: bool = True
     save_defect_snapshot: bool = True
     save_debug_frames: bool = False
 
@@ -311,7 +310,6 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                 max_outlier_ratio=float(cal_raw.get("max_outlier_ratio", 0.30)),
             ),
             logging=LoggingConfig(
-                csv_per_triggered_bar=bool(logging_raw.get("csv_per_triggered_bar", True)),
                 save_defect_snapshot=bool(logging_raw.get("save_defect_snapshot", True)),
                 save_debug_frames=bool(logging_raw.get("save_debug_frames", False)),
             ),

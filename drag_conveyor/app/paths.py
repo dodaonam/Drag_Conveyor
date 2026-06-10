@@ -10,14 +10,12 @@ class DeploymentPaths:
     root: Path
     weights_dir: Path
     config_dir: Path
-    logs_dir: Path
     output_dir: Path
     defect_snapshots_dir: Path
     runtime_dir: Path
 
     def ensure_runtime_dirs(self) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.defect_snapshots_dir.mkdir(parents=True, exist_ok=True)
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -39,7 +37,6 @@ def resolve_paths(app_root: str | Path | None = None) -> DeploymentPaths:
         root=root,
         weights_dir=root / "weights",
         config_dir=root / "config",
-        logs_dir=root / "logs",
         output_dir=output_dir,
         defect_snapshots_dir=output_dir / "defect_snapshots",
         runtime_dir=root / "runtime",

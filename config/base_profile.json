@@ -56,7 +56,6 @@
   },
   "calibration_result": null,
   "logging": {
-    "csv_per_triggered_bar": true,
     "save_defect_snapshot": true,
     "save_debug_frames": false
   }

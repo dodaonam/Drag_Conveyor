@@ -27,6 +27,7 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .s { display: none; min-height: 100svh; flex-direction: column; }
+.shell { width: 100%; max-width: 1280px; margin: 0 auto; }
 
 /* ── Layout helpers ─────────────────────────────────────────────────────── */
 .hdr {
@@ -36,6 +37,15 @@ body {
 }
 .hdr-aux { margin-left: auto; background: none; border: none; color: #fff; font-size: 14px; font-weight: 400; cursor: pointer; padding: 4px 0; }
 .body { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+.body-center { justify-content: center; align-items: center; }
+.panel { width: 100%; max-width: 460px; }
+.setup-grid,
+.result-grid { display: grid; gap: 14px; }
+.setup-side,
+.result-side,
+.setup-main,
+.result-main { display: flex; flex-direction: column; gap: 14px; }
+.card-tight { padding: 12px; }
 
 /* ── Card ───────────────────────────────────────────────────────────────── */
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 16px; }
@@ -112,6 +122,29 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
 .ok-banner .icon { font-size: 56px; margin-bottom: 12px; }
 .ok-banner h2 { font-size: 20px; font-weight: 700; color: var(--green); }
 .ok-banner p  { font-size: 14px; color: var(--muted); margin-top: 6px; }
+
+@media (min-width: 900px) {
+  body {
+    background:
+      radial-gradient(circle at top left, rgba(37,99,235,.08), transparent 28%),
+      radial-gradient(circle at top right, rgba(8,145,178,.08), transparent 24%),
+      var(--bg);
+  }
+
+  .hdr { padding: 16px 28px; font-size: 18px; }
+  .body { padding: 28px; gap: 20px; }
+  .panel { max-width: 520px; }
+  .setup-grid { grid-template-columns: minmax(320px, 360px) minmax(0, 1fr); align-items: start; gap: 24px; }
+  .result-grid { grid-template-columns: minmax(280px, 320px) minmax(0, 1fr); align-items: start; gap: 24px; }
+  .setup-side,
+  .result-side { position: sticky; top: 28px; }
+  .stat-grid { grid-template-columns: 1fr; }
+  .defects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+}
+
+@media (min-width: 1200px) {
+  .defects { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 </style>
 </head>
 <body>
@@ -120,7 +153,8 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
      Screen: LOGIN
 ═══════════════════════════════════════════════════════════════════ -->
 <div id="s-login" class="s">
-  <div style="flex:1;display:flex;flex-direction:column;justify-content:center;padding:24px">
+  <div class="body body-center">
+    <div class="panel">
     <div class="login-logo">
       <div style="font-size:48px;margin-bottom:8px">⚙️</div>
       <h1>Kiểm tra băng tải</h1>
@@ -134,6 +168,7 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
       <button class="btn btn-primary" id="btn-login">Đăng nhập</button>
       <div id="err-login" class="err" style="margin-top:12px"></div>
     </div>
+    </div>
   </div>
 </div>
 
@@ -142,52 +177,60 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
 ═══════════════════════════════════════════════════════════════════ -->
 <div id="s-setup" class="s">
   <div class="hdr">
-    <span>Tạo kiểm tra mới</span>
-    <button class="hdr-aux" id="btn-logout">Đăng xuất</button>
+    <div class="shell" style="display:flex;align-items:center;gap:10px">
+      <span>Tạo kiểm tra mới</span>
+      <button class="hdr-aux" id="btn-logout">Đăng xuất</button>
+    </div>
   </div>
   <div class="body">
+    <div class="shell setup-grid">
+      <div class="setup-side">
 
-    <!-- Video picker -->
-    <div class="card">
-      <label class="lbl">Video băng tải</label>
-      <input type="file" id="inp-video" accept="video/*" style="display:none">
-      <button class="btn btn-outline" id="btn-pick">Chọn video từ điện thoại</button>
-      <div id="video-name" style="font-size:13px;color:var(--muted);margin-top:8px;display:none"></div>
-    </div>
-
-    <div class="card">
-      <label class="lbl" for="sel-inspection-mode">Chế độ đo</label>
-      <select id="sel-inspection-mode">
-        <option value="auto_baseline">Tự động theo chuẩn lô hiện tại</option>
-        <option value="average_ratio">So với kích thước trung bình</option>
-      </select>
-      <div style="font-size:13px;color:var(--muted);margin-top:8px">
-        Chế độ trung bình dùng ngưỡng dài 0.99 - 1.01 và rộng 0.9 - 1.1.
-      </div>
-    </div>
-
-    <!-- ROI setup (shown after video selected) -->
-    <div id="roi-section" style="display:none">
-
-      <div class="card" style="padding:12px">
-        <label class="lbl" style="margin-bottom:8px">Vùng kiểm tra (ROI)</label>
-        <div id="canvas-wrap">
-          <canvas id="roi-canvas"></canvas>
-          <div id="canvas-hint">Bấm Chọn vùng chụp để bắt đầu</div>
+        <!-- Video picker -->
+        <div class="card">
+          <label class="lbl">Video băng tải</label>
+          <input type="file" id="inp-video" accept="video/*" style="display:none">
+          <button class="btn btn-outline" id="btn-pick">Chọn video từ điện thoại</button>
+          <div id="video-name" style="font-size:13px;color:var(--muted);margin-top:8px;display:none"></div>
         </div>
-        <div class="roi-actions">
-          <button class="btn btn-outline btn-sm btn-main" id="btn-edit-roi">Chọn vùng chụp</button>
-          <button class="btn btn-outline btn-sm btn-done" id="btn-lock-roi" disabled>✓</button>
-          <span id="roi-status" style="font-size:13px;color:var(--muted)">Chưa chọn vùng</span>
+
+        <div class="card">
+          <label class="lbl" for="sel-inspection-mode">Chế độ đo</label>
+          <select id="sel-inspection-mode">
+            <option value="auto_baseline">Tự động theo chuẩn lô hiện tại</option>
+            <option value="average_ratio">So với kích thước trung bình</option>
+          </select>
+          <div style="font-size:13px;color:var(--muted);margin-top:8px">
+            Chế độ trung bình dùng ngưỡng dài 0.99 - 1.01 và rộng 0.9 - 1.1.
+          </div>
         </div>
       </div>
 
-      <div id="err-setup" class="err"></div>
-      <button class="btn btn-primary" id="btn-submit" style="padding:16px;font-size:17px">
-        Bắt đầu kiểm tra
-      </button>
+      <div class="setup-main">
+        <!-- ROI setup (shown after video selected) -->
+        <div id="roi-section" style="display:none">
 
-    </div><!-- /roi-section -->
+          <div class="card card-tight">
+            <label class="lbl" style="margin-bottom:8px">Vùng kiểm tra (ROI)</label>
+            <div id="canvas-wrap">
+              <canvas id="roi-canvas"></canvas>
+              <div id="canvas-hint">Bấm Chọn vùng chụp để bắt đầu</div>
+            </div>
+            <div class="roi-actions">
+              <button class="btn btn-outline btn-sm btn-main" id="btn-edit-roi">Chọn vùng chụp</button>
+              <button class="btn btn-outline btn-sm btn-done" id="btn-lock-roi" disabled>✓</button>
+              <span id="roi-status" style="font-size:13px;color:var(--muted)">Chưa chọn vùng</span>
+            </div>
+          </div>
+
+          <div id="err-setup" class="err"></div>
+          <button class="btn btn-primary" id="btn-submit" style="padding:16px;font-size:17px">
+            Bắt đầu kiểm tra
+          </button>
+
+        </div><!-- /roi-section -->
+      </div>
+    </div>
   </div>
 </div>
 
@@ -195,9 +238,9 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
      Screen: UPLOADING
 ═══════════════════════════════════════════════════════════════════ -->
 <div id="s-uploading" class="s">
-  <div class="hdr"><span>Đang tải lên</span></div>
-  <div class="body" style="justify-content:center">
-    <div class="card" style="text-align:center;padding:32px 20px">
+  <div class="hdr"><div class="shell"><span>Đang tải lên</span></div></div>
+  <div class="body body-center">
+    <div class="card panel" style="text-align:center;padding:32px 20px">
       <p style="font-size:15px;color:var(--muted);margin-bottom:20px">Đang tải video lên máy chủ…</p>
       <div class="prog-wrap"><div class="prog-bar" id="prog-bar"></div></div>
       <div class="prog-pct" id="prog-pct">0%</div>
@@ -209,9 +252,9 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
      Screen: POLLING
 ═══════════════════════════════════════════════════════════════════ -->
 <div id="s-polling" class="s">
-  <div class="hdr"><span>Đang xử lý</span></div>
-  <div class="body" style="justify-content:center">
-    <div class="card" style="padding:24px 20px">
+  <div class="hdr"><div class="shell"><span>Đang xử lý</span></div></div>
+  <div class="body body-center">
+    <div class="card panel" style="padding:24px 20px">
       <div class="spinner"></div>
       <div class="poll-msg" id="poll-msg">Đang chờ xử lý…</div>
       <div class="poll-detail" id="poll-detail">Xin chờ trong giây lát</div>
@@ -227,31 +270,39 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
      Screen: RESULT
 ═══════════════════════════════════════════════════════════════════ -->
 <div id="s-result" class="s">
-  <div class="hdr"><span>Kết quả kiểm tra</span></div>
+  <div class="hdr">
+    <div class="shell"><span>Kết quả kiểm tra</span></div>
+  </div>
   <div class="body">
+    <div class="shell result-grid">
+      <div class="result-side">
 
-    <!-- Summary counts -->
-    <div class="card">
-      <label class="lbl">Tổng kết</label>
-      <div class="stat-grid" id="stat-grid"></div>
-    </div>
+        <!-- Summary counts -->
+        <div class="card">
+          <label class="lbl">Tổng kết</label>
+          <div class="stat-grid" id="stat-grid"></div>
+        </div>
 
-    <!-- No defects -->
-    <div id="no-defect" class="card ok-banner" style="display:none">
-      <div class="icon">✅</div>
-      <h2>Không phát hiện lỗi</h2>
-      <p>Tất cả thanh đều đạt tiêu chuẩn</p>
-    </div>
+        <!-- No defects -->
+        <div id="no-defect" class="card ok-banner" style="display:none">
+          <div class="icon">✅</div>
+          <h2>Không phát hiện lỗi</h2>
+          <p>Tất cả thanh đều đạt tiêu chuẩn</p>
+        </div>
 
-    <!-- Defect gallery -->
-    <div id="defect-section" style="display:none">
-      <div class="card" style="padding:12px 16px 8px">
-        <label class="lbl">Thanh bị lỗi</label>
+        <button class="btn btn-primary" id="btn-new-job">Kiểm tra tiếp</button>
       </div>
-      <div class="defects" id="defect-list"></div>
-    </div>
 
-    <button class="btn btn-primary" id="btn-new-job">Kiểm tra tiếp</button>
+      <div class="result-main">
+        <!-- Defect gallery -->
+        <div id="defect-section" style="display:none">
+          <div class="card" style="padding:12px 16px 8px">
+            <label class="lbl">Thanh bị lỗi</label>
+          </div>
+          <div class="defects" id="defect-list"></div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 

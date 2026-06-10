@@ -6,9 +6,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from ..acceptance import evaluate_run_outputs
 from ..tools.benchmark import run_benchmark, save_benchmark_report
-from ..config import Profile, default_profile, load_profile, save_profile
+from ..config import default_profile, load_profile, save_profile
 from ..video_io import open_video_source
 from .batch import run_batch_inspection
 from .paths import resolve_model_path, resolve_paths
@@ -39,7 +38,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect.add_argument("--profile", default="config/base_profile.json")
     p_inspect.add_argument("--source", required=True, help="Video path")
     p_inspect.add_argument("--run-id", default=None, help="Optional fixed run ID")
-    p_inspect.add_argument("--logs-dir", default=None, help="Override logs directory")
     p_inspect.add_argument("--no-snapshot", action="store_true", help="Skip defect snapshot writing")
 
     p_bench = sub.add_parser("benchmark", help="Benchmark input sizes")
@@ -80,19 +78,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_uat.add_argument("--defects-truth", default=None)
     p_uat.add_argument("--normal-truth", default=None)
 
-    p_uat_def = sub.add_parser("uat-defects", help="Compute A10 recall from run CSV + defect truth")
-    p_uat_def.add_argument("--run-id", required=True)
-    p_uat_def.add_argument("--truth", required=True, help="Path to defect truth JSON")
-
-    p_uat_norm = sub.add_parser("uat-normal", help="Compute A11 false-positive ratio from run CSV + normal truth")
-    p_uat_norm.add_argument("--run-id", required=True)
-    p_uat_norm.add_argument("--truth", required=True, help="Path to normal truth JSON")
-    p_uat_norm.add_argument(
-        "--defects-truth",
-        default=None,
-        help="Optional defect truth JSON to also print recall + full confusion matrix",
-    )
-
     return parser
 
 
@@ -132,14 +117,11 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
 
-    logs_dir = Path(args.logs_dir).resolve() if args.logs_dir else paths.logs_dir
-
     result = run_batch_inspection(
         profile=profile,
         source=args.source,
         model_path=str(model_path),
         run_id=getattr(args, "run_id", None),
-        logs_dir=logs_dir,
         defect_snapshots_root=paths.defect_snapshots_dir,
         save_defect_snapshot=not getattr(args, "no_snapshot", False),
     )
@@ -160,7 +142,6 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         f"inlier_ratio={result.inlier_ratio:.3f}",
         f"inlier_count={result.inlier_count}",
         f"outlier_count={result.outlier_count}",
-        f"csv={result.csv_path}",
         f"snapshots={result.defect_snapshots_dir}",
     )
     return 0
@@ -250,20 +231,7 @@ def cmd_uat(args: argparse.Namespace) -> int:
     try:
         from acceptance.report import build_report, save_markdown
     except ModuleNotFoundError:
-        result = evaluate_run_outputs(app_root=root, run_id=args.run_id)
-        print(
-            "UAT result (A2 proxy):",
-            f"run_id={result.run_id}",
-            f"rows={result.total_rows}",
-            f"suspected_rows={result.suspected_rows}",
-            f"snapshots={result.snapshots_found}",
-            f"A2_pass={result.a2_pass}",
-        )
-        if result.issues:
-            for issue in result.issues:
-                print("-", issue)
-            return 2
-        return 0
+        raise RuntimeError("acceptance.report module is required")
 
     report = build_report(
         app_root=root,
@@ -312,78 +280,6 @@ def cmd_uat(args: argparse.Namespace) -> int:
     return 0 if report.passed else 2
 
 
-def cmd_uat_defects(args: argparse.Namespace) -> int:
-    root = Path(args.app_root).resolve()
-    truth_path = Path(args.truth).resolve()
-    from acceptance.test_a10_defect_recall import evaluate_from_run
-
-    criterion, evidence = evaluate_from_run(
-        app_root=root,
-        run_id=args.run_id,
-        truth_path=truth_path,
-    )
-    print(
-        "A10 defect recall:",
-        f"run_id={args.run_id}",
-        f"passed={criterion.passed}",
-        criterion.details,
-    )
-    print(json.dumps(evidence, indent=2, ensure_ascii=False))
-    return 0 if criterion.passed else 2
-
-
-def cmd_uat_normal(args: argparse.Namespace) -> int:
-    root = Path(args.app_root).resolve()
-    truth_path = Path(args.truth).resolve()
-    from acceptance.test_a11_false_positive import evaluate_from_run
-    from acceptance.test_a10_defect_recall import evaluate_from_run as evaluate_defect_recall
-
-    criterion, evidence = evaluate_from_run(
-        app_root=root,
-        run_id=args.run_id,
-        truth_path=truth_path,
-    )
-    print(
-        "A11 false positive:",
-        f"run_id={args.run_id}",
-        f"passed={criterion.passed}",
-        criterion.details,
-    )
-    print(json.dumps(evidence, indent=2, ensure_ascii=False))
-    if args.defects_truth:
-        defects_truth_path = Path(args.defects_truth).resolve()
-        defect_criterion, defect_evidence = evaluate_defect_recall(
-            app_root=root,
-            run_id=args.run_id,
-            truth_path=defects_truth_path,
-        )
-        confusion = {
-            "tp": int(defect_evidence.get("true_positive", 0)),
-            "fn": int(defect_evidence.get("false_negative", 0)),
-            "fp": int(evidence.get("false_positive_count", 0)),
-            "tn": int(evidence.get("true_negative_count", 0)),
-        }
-        print(
-            "A10 recall (optional):",
-            f"passed={defect_criterion.passed}",
-            defect_criterion.details,
-        )
-        print(
-            json.dumps(
-                {
-                    "recall": float(defect_evidence.get("recall", 0.0)),
-                    "false_positive_rate": float(evidence.get("false_positive_ratio", 0.0)),
-                    "confusion_matrix": confusion,
-                    "missed_defect_track_ids": defect_evidence.get("missed_defect_track_ids", []),
-                    "false_positive_track_ids": evidence.get("false_positive_track_ids", []),
-                },
-                indent=2,
-                ensure_ascii=False,
-            )
-        )
-    return 0 if criterion.passed else 2
-
-
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
@@ -402,10 +298,6 @@ def main() -> int:
             return cmd_benchmark(args)
         if args.command == "uat":
             return cmd_uat(args)
-        if args.command == "uat-defects":
-            return cmd_uat_defects(args)
-        if args.command == "uat-normal":
-            return cmd_uat_normal(args)
     except Exception as exc:  # noqa: BLE001
         print(f"Error: {exc}")
         return 2
