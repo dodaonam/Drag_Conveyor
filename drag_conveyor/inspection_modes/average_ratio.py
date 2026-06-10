@@ -19,10 +19,10 @@ def is_supported_inspection_mode(mode: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class AverageRatioThresholds:
-    width_min_ratio: float = 0.85
-    width_max_ratio: float = 1.1
-    length_min_ratio: float = 0.95
-    length_max_ratio: float = 1.05
+    width_min_ratio: float = 0.84
+    width_max_ratio: float = 1.06
+    length_min_ratio: float = 0.94
+    length_max_ratio: float = 1.06
 
 
 @dataclass(frozen=True, slots=True)
