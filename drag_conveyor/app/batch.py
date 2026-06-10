@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import csv
-import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -14,6 +11,12 @@ import numpy as np
 from ..calibration import CalibrationEngine
 from ..config import CalibrationResult, Profile
 from ..inference import OnnxRuntimeEngine, postprocess_segmentation, preprocess_roi
+from ..inspection_modes import (
+    AVERAGE_RATIO_INSPECTION_MODE,
+    DEFAULT_INSPECTION_MODE,
+    AverageRatioInspector,
+    is_supported_inspection_mode,
+)
 from ..pipeline.measure import measure_contour
 from ..pipeline.rules import RuleEngine
 from ..pipeline.tracking import CentroidTracker
@@ -37,6 +40,7 @@ class CollectedBar:
     bbox_frame_xyxy: tuple[float, float, float, float]
     overlap_ratio: float
     contour_frame: np.ndarray
+    source_frame: np.ndarray
     latency_ms: float
 
 
@@ -53,6 +57,7 @@ class BarResult:
     bbox_frame_xyxy: tuple[float, float, float, float]
     contour_frame: np.ndarray
     latency_ms: float
+    source_frame: np.ndarray | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,8 +74,16 @@ class BatchInspectionResult:
     inlier_count: int
     outlier_count: int
     inlier_ratio: float
-    csv_path: Path | None
     defect_snapshots_dir: Path | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ClassificationOutcome:
+    calibration_result: CalibrationResult | None
+    bars: list[BarResult]
+    inlier_count: int
+    outlier_count: int
+    inlier_ratio: float
 
 
 def run_batch_inspection(
@@ -79,15 +92,17 @@ def run_batch_inspection(
     source: str,
     model_path: str,
     run_id: str | None = None,
-    logs_dir: Path | None = None,
     defect_snapshots_root: Path | None = None,
     save_defect_snapshot: bool = True,
+    inspection_mode: str = DEFAULT_INSPECTION_MODE,
 ) -> BatchInspectionResult:
     """Single-pass collect-all: infer full video, calibrate on all data, classify all bars."""
     if not Path(source).exists():
         raise FileNotFoundError(f"Video source not found: {source}")
     if run_id is not None and ((".." in run_id) or ("/" in run_id) or ("\\" in run_id)):
         raise ValueError(f"run_id must not contain path separators: {run_id!r}")
+    if not is_supported_inspection_mode(inspection_mode):
+        raise ValueError(f"Unsupported inspection_mode: {inspection_mode}")
     run_id = run_id or generate_run_id()
     region = profile.inspection_region
 
@@ -186,6 +201,7 @@ def run_batch_inspection(
                         bbox_frame_xyxy=track.detection.bbox_frame_xyxy,
                         overlap_ratio=float(overlap),
                         contour_frame=track.detection.contour_frame,
+                        source_frame=frame.copy(),
                         latency_ms=latency_ms,
                     )
                 )
@@ -210,20 +226,21 @@ def run_batch_inspection(
             inlier_count=0,
             outlier_count=0,
             inlier_ratio=0.0,
-            csv_path=None,
             defect_snapshots_dir=None,
         )
 
-    # --- Phase 2: Calibrate trên toàn bộ dữ liệu thu thập ---
-    records = [bar.measurements for bar in collected]
-    outcome = CalibrationEngine().calibrate(records, profile)
-
-    if not outcome.success or outcome.calibration_result is None or outcome.updated_profile is None:
-        LOGGER.warning("Calibration failed: %s", outcome.reason)
+    try:
+        classified = _classify_collected_bars(
+            collected=collected,
+            profile=profile,
+            inspection_mode=inspection_mode,
+        )
+    except ValueError as exc:
+        LOGGER.warning("Classification failed: %s", exc)
         return BatchInspectionResult(
             run_id=run_id,
             success=False,
-            failure_reason=outcome.reason,
+            failure_reason=str(exc),
             calibration_result=None,
             bars=[],
             total_bars=len(collected),
@@ -233,16 +250,64 @@ def run_batch_inspection(
             inlier_count=0,
             outlier_count=0,
             inlier_ratio=0.0,
-            csv_path=None,
             defect_snapshots_dir=None,
         )
 
-    # --- Phase 3: Classify toàn bộ thanh ---
+    normal_bars = sum(1 for r in classified.bars if r.result == "normal")
+    defect_bars = len(classified.bars) - normal_bars
+    LOGGER.info("Classification: %d normal, %d defect", normal_bars, defect_bars)
+
+    # --- Phase 4: Ghi defect snapshot (seek-based, không buffer frame) ---
+    defect_snapshots_dir: Path | None = None
+    if save_defect_snapshot and defect_snapshots_root is not None:
+        defects = [r for r in classified.bars if r.result == "suspected_defect"]
+        if defects:
+            defect_snapshots_dir = Path(defect_snapshots_root) / run_id
+            _write_defect_snapshots(defects, defect_snapshots_dir)
+
+    return BatchInspectionResult(
+        run_id=run_id,
+        success=True,
+        failure_reason="",
+        calibration_result=classified.calibration_result,
+        bars=classified.bars,
+        total_bars=len(classified.bars),
+        normal_bars=normal_bars,
+        defect_bars=defect_bars,
+        frames_scanned=frame_count,
+        inlier_count=classified.inlier_count,
+        outlier_count=classified.outlier_count,
+        inlier_ratio=classified.inlier_ratio,
+        defect_snapshots_dir=defect_snapshots_dir,
+    )
+
+
+def _classify_collected_bars(
+    *,
+    collected: list[CollectedBar],
+    profile: Profile,
+    inspection_mode: str,
+) -> _ClassificationOutcome:
+    if inspection_mode == AVERAGE_RATIO_INSPECTION_MODE:
+        return _classify_with_average_ratio(collected)
+    return _classify_with_auto_baseline(collected, profile)
+
+
+def _classify_with_auto_baseline(
+    collected: list[CollectedBar],
+    profile: Profile,
+) -> _ClassificationOutcome:
+    records = [bar.measurements for bar in collected]
+    outcome = CalibrationEngine().calibrate(records, profile)
+
+    if not outcome.success or outcome.calibration_result is None or outcome.updated_profile is None:
+        raise ValueError(outcome.reason)
+
     rule_engine = RuleEngine()
     calibration_result = outcome.calibration_result
     calibrated_rules = outcome.updated_profile.rules
-
     bar_results: list[BarResult] = []
+
     for bar in collected:
         evaluation = rule_engine.evaluate(
             measurements=bar.measurements,
@@ -262,96 +327,58 @@ def run_batch_inspection(
                 bbox_frame_xyxy=bar.bbox_frame_xyxy,
                 contour_frame=bar.contour_frame,
                 latency_ms=bar.latency_ms,
+                source_frame=bar.source_frame,
             )
         )
 
-    normal_bars = sum(1 for r in bar_results if r.result == "normal")
-    defect_bars = len(bar_results) - normal_bars
-    LOGGER.info("Classification: %d normal, %d defect", normal_bars, defect_bars)
-
-    # --- Phase 4: Ghi CSV ---
-    csv_path: Path | None = None
-    if logs_dir is not None:
-        logs_dir = Path(logs_dir)
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = logs_dir / f"{run_id}_inspection.csv"
-        _write_results_csv(csv_path, run_id, bar_results)
-
-    # --- Phase 5: Ghi defect snapshot (seek-based, không buffer frame) ---
-    defect_snapshots_dir: Path | None = None
-    if save_defect_snapshot and defect_snapshots_root is not None:
-        defects = [r for r in bar_results if r.result == "suspected_defect"]
-        if defects:
-            defect_snapshots_dir = Path(defect_snapshots_root) / run_id
-            _write_defect_snapshots(source, defects, defect_snapshots_dir)
-
-    return BatchInspectionResult(
-        run_id=run_id,
-        success=True,
-        failure_reason="",
+    return _ClassificationOutcome(
         calibration_result=calibration_result,
         bars=bar_results,
-        total_bars=len(bar_results),
-        normal_bars=normal_bars,
-        defect_bars=defect_bars,
-        frames_scanned=frame_count,
-        inlier_count=outcome.calibration_result.inlier_count,
-        outlier_count=outcome.calibration_result.outlier_count,
-        inlier_ratio=outcome.calibration_result.inlier_ratio,
-        csv_path=csv_path,
-        defect_snapshots_dir=defect_snapshots_dir,
+        inlier_count=calibration_result.inlier_count,
+        outlier_count=calibration_result.outlier_count,
+        inlier_ratio=calibration_result.inlier_ratio,
     )
 
 
-def _write_results_csv(path: Path, run_id: str, bars: list[BarResult]) -> None:
-    columns = [
-        "run_id", "timestamp", "frame_id", "track_id",
-        "result", "score", "reasons", "length", "width",
-        "inference_fps_estimate", "latency_ms",
-    ]
-    ts = datetime.now().isoformat(timespec="milliseconds")
-    with path.open("w", newline="", encoding="utf-8") as fp:
-        writer = csv.DictWriter(fp, fieldnames=columns)
-        writer.writeheader()
-        for bar in bars:
-            fps_est = 1000.0 / bar.latency_ms if bar.latency_ms > 0 else 0.0
-            writer.writerow({
-                "run_id": run_id,
-                "timestamp": ts,
-                "frame_id": bar.frame_id,
-                "track_id": bar.track_id,
-                "result": bar.result,
-                "score": f"{bar.score:.4f}",
-                "reasons": json.dumps(bar.reasons, ensure_ascii=False),
-                "length": f"{bar.measurements.get('length', 0.0):.4f}",
-                "width": f"{bar.measurements.get('width', 0.0):.4f}",
-                "inference_fps_estimate": f"{fps_est:.2f}",
-                "latency_ms": f"{bar.latency_ms:.2f}",
-            })
+def _classify_with_average_ratio(collected: list[CollectedBar]) -> _ClassificationOutcome:
+    inspector = AverageRatioInspector()
+    averages = inspector.compute_averages([bar.measurements for bar in collected])
+    bar_results: list[BarResult] = []
+
+    for bar in collected:
+        evaluation = inspector.evaluate(bar.measurements, averages)
+        bar_results.append(
+            BarResult(
+                frame_id=bar.frame_id,
+                track_id=bar.track_id,
+                result=evaluation.result,
+                score=evaluation.score,
+                reasons=list(evaluation.reasons),
+                measurements=dict(bar.measurements),
+                thresholds=dict(evaluation.thresholds),
+                margins=dict(evaluation.margins),
+                bbox_frame_xyxy=bar.bbox_frame_xyxy,
+                contour_frame=bar.contour_frame,
+                latency_ms=bar.latency_ms,
+                source_frame=bar.source_frame,
+            )
+        )
+
+    return _ClassificationOutcome(
+        calibration_result=None,
+        bars=bar_results,
+        inlier_count=len(collected),
+        outlier_count=0,
+        inlier_ratio=1.0,
+    )
 
 
-def _write_defect_snapshots(
-    source: str,
-    defects: list[BarResult],
-    snapshots_dir: Path,
-) -> None:
+def _write_defect_snapshots(defects: list[BarResult], snapshots_dir: Path) -> None:
     snapshots_dir.mkdir(parents=True, exist_ok=True)
-
-    by_frame: dict[int, list[BarResult]] = {}
-    for d in defects:
-        by_frame.setdefault(d.frame_id, []).append(d)
-
-    cap, _ = open_video_source(source)
-    try:
-        for frame_id, frame_defects in sorted(by_frame.items()):
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id - 1)
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                continue
-            for d in frame_defects:
-                _save_box_contour_snapshot(frame, d, snapshots_dir)
-    finally:
-        cap.release()
+    for defect in defects:
+        if defect.source_frame is None:
+            continue
+        _save_box_contour_snapshot(defect.source_frame, defect, snapshots_dir)
 
 
 def _save_box_contour_snapshot(
