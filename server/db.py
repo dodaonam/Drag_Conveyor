@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Generator
 
 DB_PATH = Path(__file__).parent / "jobs.db"
-_DEFAULT_INSPECTION_MODE = "auto_baseline"
+_DEFAULT_INSPECTION_MODE = "average_ratio"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     object_key          TEXT,
     content_type        TEXT,
     size_bytes          INTEGER,
-    inspection_mode     TEXT NOT NULL DEFAULT 'auto_baseline',
+    inspection_mode     TEXT NOT NULL DEFAULT 'average_ratio',
     roi_config_json     TEXT,
     upload_completed_at TEXT,
     result_summary_json TEXT,
@@ -56,7 +56,7 @@ def _migrate_jobs_table(conn: sqlite3.Connection) -> None:
             object_key          TEXT,
             content_type        TEXT,
             size_bytes          INTEGER,
-            inspection_mode     TEXT NOT NULL DEFAULT 'auto_baseline',
+            inspection_mode     TEXT NOT NULL DEFAULT 'average_ratio',
             roi_config_json     TEXT,
             upload_completed_at TEXT,
             result_summary_json TEXT,
@@ -84,7 +84,7 @@ def _migrate_jobs_table(conn: sqlite3.Connection) -> None:
             object_key,
             content_type,
             size_bytes,
-            'auto_baseline',
+            'average_ratio',
             roi_config_json,
             upload_completed_at,
             result_summary_json,
@@ -100,7 +100,7 @@ def _ensure_inspection_mode_column(conn: sqlite3.Connection) -> None:
     if "inspection_mode" in columns:
         return
     conn.execute(
-        "ALTER TABLE jobs ADD COLUMN inspection_mode TEXT NOT NULL DEFAULT 'auto_baseline'"
+        "ALTER TABLE jobs ADD COLUMN inspection_mode TEXT NOT NULL DEFAULT 'average_ratio'"
     )
 
 

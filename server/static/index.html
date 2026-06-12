@@ -221,16 +221,6 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
           <div id="video-name" style="font-size:13px;color:var(--muted);margin-top:8px;display:none"></div>
         </div>
 
-        <div class="card">
-          <label class="lbl" for="sel-inspection-mode">Chế độ đo</label>
-          <select id="sel-inspection-mode">
-            <option value="auto_baseline">Tự động theo chuẩn lô hiện tại</option>
-            <option value="average_ratio">So với kích thước trung bình</option>
-          </select>
-          <div style="font-size:13px;color:var(--muted);margin-top:8px">
-            Chế độ trung bình dùng ngưỡng dài 0.99 - 1.01 và rộng 0.9 - 1.1.
-          </div>
-        </div>
       </div>
 
       <div class="setup-main">
@@ -755,7 +745,6 @@ document.getElementById('btn-submit').addEventListener('click', async () => {
     content_type: mime,
     size_bytes:   G.file.size,
     filename:     G.file.name,
-    inspection_mode: document.getElementById('sel-inspection-mode').value,
     roi: {
       x: vRoi.x, y: vRoi.y, w: vRoi.w, h: vRoi.h,
       frame_width:  G.videoW,
