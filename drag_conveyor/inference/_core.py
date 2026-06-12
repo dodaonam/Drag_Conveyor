@@ -9,7 +9,7 @@ from typing import Any, Protocol
 import cv2
 import numpy as np
 
-from ..config import ModelConfig
+from ..config import ModelConfig, PostprocessConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -56,8 +56,8 @@ class InferenceEngine(Protocol):
 
 
 class OnnxRuntimeEngine:
-    def __init__(self, providers: list[str] | None = None) -> None:
-        self.providers = providers or ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    def __init__(self, providers: list[str]) -> None:
+        self.providers = list(providers)
         self._session: Any | None = None
         self._input_name: str | None = None
         self._model_spec: ModelConfig | None = None
@@ -152,8 +152,9 @@ def preprocess_roi(
     roi_bgr: np.ndarray,
     roi_origin_xy: tuple[int, int],
     input_size: int,
-    normalize: bool = True,
-    color_format: str = "RGB",
+    normalize: bool,
+    color_format: str,
+    padding_value: int,
 ) -> PreprocessResult:
     h, w = roi_bgr.shape[:2]
     if h <= 0 or w <= 0:
@@ -164,7 +165,7 @@ def preprocess_roi(
     resized_h = int(round(h * scale))
 
     resized = cv2.resize(roi_bgr, (resized_w, resized_h), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((input_size, input_size, 3), 114, dtype=np.uint8)
+    canvas = np.full((input_size, input_size, 3), int(padding_value), dtype=np.uint8)
 
     pad_x = (input_size - resized_w) / 2.0
     pad_y = (input_size - resized_h) / 2.0
@@ -196,8 +197,7 @@ def postprocess_segmentation(
     proto_output: np.ndarray,
     preprocess: PreprocessResult,
     model_spec: ModelConfig,
-    conf_threshold: float,
-    iou_threshold: float,
+    postprocess_config: PostprocessConfig,
 ) -> list[Detection]:
     from .yolo_seg_postprocess import YoloSegPostprocessor
 
@@ -207,8 +207,7 @@ def postprocess_segmentation(
         proto_output=proto_output,
         preprocess=preprocess,
         output_format=model_spec.output_format,
-        conf_threshold=conf_threshold,
-        iou_threshold=iou_threshold,
+        postprocess_config=postprocess_config,
         detection_factory=Detection,
     )
     return detections  # type: ignore[return-value]

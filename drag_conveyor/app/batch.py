@@ -13,8 +13,8 @@ from ..config import CalibrationResult, Profile
 from ..inference import OnnxRuntimeEngine, postprocess_segmentation, preprocess_roi
 from ..inspection_modes import (
     AVERAGE_RATIO_INSPECTION_MODE,
-    DEFAULT_INSPECTION_MODE,
     AverageRatioInspector,
+    AverageRatioThresholds,
     is_supported_inspection_mode,
 )
 from ..pipeline.measure import measure_contour
@@ -90,33 +90,39 @@ def run_batch_inspection(
     *,
     profile: Profile,
     source: str,
-    model_path: str,
     run_id: str | None = None,
     defect_snapshots_root: Path | None = None,
-    inspection_mode: str = DEFAULT_INSPECTION_MODE,
+    inspection_mode: str | None = None,
 ) -> BatchInspectionResult:
     """Single-pass collect-all: infer full video, calibrate on all data, classify all bars."""
     if not Path(source).exists():
         raise FileNotFoundError(f"Video source not found: {source}")
     if run_id is not None and ((".." in run_id) or ("/" in run_id) or ("\\" in run_id)):
         raise ValueError(f"run_id must not contain path separators: {run_id!r}")
+    inspection_mode = inspection_mode or profile.inspection.mode
     if not is_supported_inspection_mode(inspection_mode):
         raise ValueError(f"Unsupported inspection_mode: {inspection_mode}")
     run_id = run_id or generate_run_id()
-    region = profile.inspection_region
+    region = profile.region
+    roi_config = region.roi
+    trigger_band = profile.collection.trigger_band
+    tracker_config = profile.collection.tracker
+    postprocess_config = profile.model.postprocess
 
-    engine = OnnxRuntimeEngine()
-    engine.load(model_path, profile.model)
+    engine = OnnxRuntimeEngine(providers=profile.model.providers)
+    engine.load(str(_resolve_model_path(profile.model.path)), profile.model)
 
     tracker = CentroidTracker(
-        max_jump_px=profile.tracker.max_jump_px,
-        ttl_frames=profile.tracker.ttl_frames,
-        min_hits=profile.tracker.min_hits,
+        max_jump_px=tracker_config.max_jump_px,
+        ttl_frames=tracker_config.ttl_frames,
+        min_hits=tracker_config.min_hits,
+        max_reverse_px=tracker_config.max_reverse_px,
+        max_area_ratio_change=tracker_config.max_area_ratio_change,
     )
-    band: BandRect = build_trigger_band(region)
+    band: BandRect = build_trigger_band(region, trigger_band)
     trigger_engine = TriggerEngine(
-        pending_ttl_frames=region.trigger_band.pending_ttl_frames,
-        allow_inside_band_trigger=region.trigger_band.allow_inside_band_trigger,
+        pending_ttl_frames=trigger_band.pending_ttl_frames,
+        allow_inside_band_trigger=trigger_band.allow_inside_band_trigger,
     )
 
     collected: list[CollectedBar] = []
@@ -146,13 +152,17 @@ def run_batch_inspection(
                 )
                 continue
 
-            roi = frame[region.y : region.y + region.h, region.x : region.x + region.w]
+            roi = frame[
+                roi_config.y : roi_config.y + roi_config.h,
+                roi_config.x : roi_config.x + roi_config.w,
+            ]
             prep = preprocess_roi(
                 roi,
-                roi_origin_xy=(region.x, region.y),
+                roi_origin_xy=(roi_config.x, roi_config.y),
                 input_size=profile.model.input_size,
                 normalize=profile.model.preprocess.normalize,
                 color_format=profile.model.preprocess.color_format,
+                padding_value=profile.model.preprocess.padding_value,
             )
             det_out, proto_out = engine.infer(prep.tensor)
             detections = postprocess_segmentation(
@@ -160,8 +170,7 @@ def run_batch_inspection(
                 proto_out,
                 preprocess=prep,
                 model_spec=profile.model,
-                conf_threshold=profile.model.conf_threshold,
-                iou_threshold=profile.model.iou_threshold,
+                postprocess_config=postprocess_config,
             )
             latency_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -176,7 +185,7 @@ def run_batch_inspection(
 
                 overlap = mask_overlap_ratio_with_band(
                     mask_roi=track.detection.mask_roi,
-                    roi_origin_xy=(region.x, region.y),
+                    roi_origin_xy=(roi_config.x, roi_config.y),
                     band=band,
                 )
                 if not trigger_engine.should_trigger(
@@ -186,7 +195,7 @@ def run_batch_inspection(
                     centerline=band.centerline,
                     band=band,
                     overlap_ratio=overlap,
-                    min_overlap_ratio=region.trigger_band.min_overlap_ratio,
+                    min_overlap_ratio=trigger_band.min_overlap_ratio,
                 ):
                     continue
 
@@ -288,7 +297,7 @@ def _classify_collected_bars(
     inspection_mode: str,
 ) -> _ClassificationOutcome:
     if inspection_mode == AVERAGE_RATIO_INSPECTION_MODE:
-        return _classify_with_average_ratio(collected)
+        return _classify_with_average_ratio(collected, profile)
     return _classify_with_auto_baseline(collected, profile)
 
 
@@ -304,13 +313,15 @@ def _classify_with_auto_baseline(
 
     rule_engine = RuleEngine()
     calibration_result = outcome.calibration_result
-    calibrated_rules = outcome.updated_profile.rules
+    calibrated_rules = outcome.updated_profile.inspection.auto_baseline
+    defect_policy = outcome.updated_profile.inspection.defect_policy
     bar_results: list[BarResult] = []
 
     for bar in collected:
         evaluation = rule_engine.evaluate(
             measurements=bar.measurements,
             rules=calibrated_rules,
+            defect_policy=defect_policy,
             calibration_result=calibration_result,
         )
         bar_results.append(
@@ -339,8 +350,20 @@ def _classify_with_auto_baseline(
     )
 
 
-def _classify_with_average_ratio(collected: list[CollectedBar]) -> _ClassificationOutcome:
-    inspector = AverageRatioInspector()
+def _classify_with_average_ratio(collected: list[CollectedBar], profile: Profile) -> _ClassificationOutcome:
+    average_ratio = profile.inspection.average_ratio
+    defect_policy = profile.inspection.defect_policy
+    thresholds = AverageRatioThresholds(
+        width_min_ratio=average_ratio.width_min_ratio,
+        width_max_ratio=average_ratio.width_max_ratio,
+        length_min_ratio=average_ratio.length_min_ratio,
+        length_max_ratio=average_ratio.length_max_ratio,
+    )
+    inspector = AverageRatioInspector(
+        thresholds=thresholds,
+        min_violated_dimensions=defect_policy.min_violated_dimensions,
+        score_dimension_count=defect_policy.score_dimension_count,
+    )
     averages = inspector.compute_averages([bar.measurements for bar in collected])
     bar_results: list[BarResult] = []
 
@@ -396,6 +419,14 @@ def _save_box_contour_snapshot(
         cv2.imwrite(str(output), image)
     except Exception as exc:  # noqa: BLE001
         LOGGER.warning("Snapshot write failure for track_id=%s: %s", bar.track_id, exc)
+
+
+def _resolve_model_path(model_path: str) -> Path:
+    path = Path(model_path)
+    if path.is_absolute():
+        return path
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / path
 
 
 __all__ = [

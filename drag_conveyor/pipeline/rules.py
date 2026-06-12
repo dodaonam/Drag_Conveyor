@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..config import CalibrationResult, RulesConfig
+from ..config import AutoBaselineConfig, CalibrationResult, DefectPolicyConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,12 +20,10 @@ class RuleEngine:
     def evaluate(
         self,
         measurements: dict[str, float],
-        rules: RulesConfig,
+        rules: AutoBaselineConfig,
+        defect_policy: DefectPolicyConfig,
         calibration_result: CalibrationResult,
     ) -> RuleEvaluation:
-        if rules.mode != "length_width_auto_baseline":
-            raise ValueError(f"Unsupported rules.mode: {rules.mode}")
-
         reasons: list[str] = []
 
         length = float(measurements["length"])
@@ -62,8 +60,12 @@ class RuleEngine:
             reasons.append("width_too_large")
             violated_dimensions += 1
 
-        score = violated_dimensions / 2.0
-        result = "suspected_defect" if violated_dimensions >= 1 else "normal"
+        score = violated_dimensions / float(defect_policy.score_dimension_count)
+        result = (
+            "suspected_defect"
+            if violated_dimensions >= defect_policy.min_violated_dimensions
+            else "normal"
+        )
         return RuleEvaluation(
             result=result,
             score=score,

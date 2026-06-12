@@ -22,7 +22,8 @@ class CalibrationOutcome:
 
 class CalibrationEngine:
     def calibrate(self, records: list[dict[str, float]], profile: Profile) -> CalibrationOutcome:
-        cfg = profile.calibration
+        auto = profile.inspection.auto_baseline
+        cfg = auto.calibration
         valid = [r for r in records if _record_has_all_features(r)]
 
         if len(valid) < cfg.min_valid_records:
@@ -36,7 +37,11 @@ class CalibrationEngine:
                 updated_profile=None,
             )
 
-        outlier_mask = _compute_outlier_mask(valid)
+        outlier_mask = _compute_outlier_mask(
+            valid,
+            modified_z_score_threshold=cfg.outlier.modified_z_score_threshold,
+            iqr_multiplier=cfg.outlier.iqr_multiplier,
+        )
         outliers = [r for r, is_out in zip(valid, outlier_mask) if is_out]
         inliers = [r for r, is_out in zip(valid, outlier_mask) if not is_out]
 
@@ -85,14 +90,14 @@ class CalibrationEngine:
         result = CalibrationResult(
             created_at=now,
             rules_updated_at=now,
-            rules_version="geometry_v1",
+            rules_version=auto.rules_version,
             sample_count=len(records),
             valid_records=valid_records,
             inlier_count=inlier_count,
             outlier_count=outlier_count,
             inlier_ratio=inlier_ratio,
             thresholds_source=(
-                f"auto_baseline_median_mad_{profile.rules.lower_percentile}_{profile.rules.upper_percentile}"
+                f"auto_baseline_median_mad_{auto.lower_percentile}_{auto.upper_percentile}"
             ),
             features=feature_stats,
         )
@@ -112,7 +117,12 @@ def _record_has_all_features(record: dict[str, float]) -> bool:
     return True
 
 
-def _compute_outlier_mask(records: list[dict[str, float]]) -> list[bool]:
+def _compute_outlier_mask(
+    records: list[dict[str, float]],
+    *,
+    modified_z_score_threshold: float,
+    iqr_multiplier: float,
+) -> list[bool]:
     mask = [False] * len(records)
 
     for name in CRITICAL_FEATURES:
@@ -122,7 +132,7 @@ def _compute_outlier_mask(records: list[dict[str, float]]) -> list[bool]:
 
         if mad > 1e-12:
             z = 0.6745 * (values - median) / mad
-            feature_out = np.abs(z) > 3.5
+            feature_out = np.abs(z) > modified_z_score_threshold
         else:
             q1 = float(np.percentile(values, 25))
             q3 = float(np.percentile(values, 75))
@@ -130,8 +140,8 @@ def _compute_outlier_mask(records: list[dict[str, float]]) -> list[bool]:
             if iqr <= 1e-12:
                 feature_out = np.zeros_like(values, dtype=bool)
             else:
-                lower = q1 - 1.5 * iqr
-                upper = q3 + 1.5 * iqr
+                lower = q1 - iqr_multiplier * iqr
+                upper = q3 + iqr_multiplier * iqr
                 feature_out = (values < lower) | (values > upper)
 
         for idx, out in enumerate(feature_out.tolist()):
@@ -173,5 +183,5 @@ def _feature_stats(values: list[float]) -> FeatureStats:
 
 def _apply_calibration_to_profile(profile: Profile, result: CalibrationResult) -> Profile:
     updated = copy.deepcopy(profile)
-    updated.calibration_result = result
+    updated.inspection.auto_baseline.calibration_result = result
     return updated

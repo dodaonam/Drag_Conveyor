@@ -4,10 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..config import InspectionRegionConfig
-
-TRIGGER_POSITION_RATIO = 0.5
-TRIGGER_THICKNESS_RATIO = 0.25
+from ..config import RegionConfig, TriggerBandConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,14 +16,15 @@ class BandRect:
     centerline: float
 
 
-def build_trigger_band(region: InspectionRegionConfig) -> BandRect:
-    x1 = int(region.x)
-    y1 = int(region.y)
-    x2 = int(region.x + region.w)
-    y2 = int(region.y + region.h)
+def build_trigger_band(region: RegionConfig, band_config: TriggerBandConfig) -> BandRect:
+    roi = region.roi
+    x1 = int(roi.x)
+    y1 = int(roi.y)
+    x2 = int(roi.x + roi.w)
+    y2 = int(roi.y + roi.h)
 
-    thickness = max(1, int(round(region.h * TRIGGER_THICKNESS_RATIO)))
-    center = region.y + region.h * TRIGGER_POSITION_RATIO
+    thickness = max(1, int(round(roi.h * band_config.thickness_ratio)))
+    center = roi.y + roi.h * band_config.position_ratio
     half = thickness / 2.0
     by1 = max(y1, int(round(center - half)))
     by2 = min(y2, int(round(center + half)))
@@ -82,7 +80,7 @@ def mask_overlap_ratio_with_band(
 
 
 class TriggerEngine:
-    def __init__(self, pending_ttl_frames: int = 3, allow_inside_band_trigger: bool = True) -> None:
+    def __init__(self, pending_ttl_frames: int, allow_inside_band_trigger: bool) -> None:
         self.pending_ttl_frames = max(0, int(pending_ttl_frames))
         self.allow_inside_band_trigger = bool(allow_inside_band_trigger)
         self._pending: dict[int, int] = {}
@@ -139,8 +137,6 @@ class TriggerEngine:
 
 __all__ = [
     "BandRect",
-    "TRIGGER_POSITION_RATIO",
-    "TRIGGER_THICKNESS_RATIO",
     "TriggerEngine",
     "build_trigger_band",
     "centroid_crossed",

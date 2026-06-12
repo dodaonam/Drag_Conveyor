@@ -222,7 +222,6 @@ data/*
 data/raw_data/*
 !data/raw_data/vid_1.mp4
 model/
-tests/
 train/
 scripts/
 runtime/

@@ -26,8 +26,8 @@ class CentroidTracker:
         max_jump_px: float,
         ttl_frames: int,
         min_hits: int,
-        max_reverse_px: float = 5.0,
-        max_area_ratio_change: float = 3.0,
+        max_reverse_px: float,
+        max_area_ratio_change: float,
     ) -> None:
         self.max_jump_px = max_jump_px
         self.ttl_frames = ttl_frames

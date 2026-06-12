@@ -6,7 +6,6 @@ import numpy as np
 
 AUTO_BASELINE_INSPECTION_MODE = "auto_baseline"
 AVERAGE_RATIO_INSPECTION_MODE = "average_ratio"
-DEFAULT_INSPECTION_MODE = AVERAGE_RATIO_INSPECTION_MODE
 SUPPORTED_INSPECTION_MODES = {
     AUTO_BASELINE_INSPECTION_MODE,
     AVERAGE_RATIO_INSPECTION_MODE,
@@ -19,10 +18,10 @@ def is_supported_inspection_mode(mode: str) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class AverageRatioThresholds:
-    width_min_ratio: float = 0.84
-    width_max_ratio: float = 1.06
-    length_min_ratio: float = 0.94
-    length_max_ratio: float = 1.1
+    width_min_ratio: float
+    width_max_ratio: float
+    length_min_ratio: float
+    length_max_ratio: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,8 +38,22 @@ class AverageRatioDecision:
 class AverageRatioInspector:
     """Standalone classifier for average-based defect checks."""
 
-    def __init__(self, thresholds: AverageRatioThresholds | None = None) -> None:
-        self.thresholds = thresholds or AverageRatioThresholds()
+    def __init__(
+        self,
+        thresholds: AverageRatioThresholds,
+        *,
+        min_violated_dimensions: int,
+        score_dimension_count: int,
+    ) -> None:
+        self.thresholds = thresholds
+        self.min_violated_dimensions = int(min_violated_dimensions)
+        self.score_dimension_count = int(score_dimension_count)
+        if self.min_violated_dimensions < 1:
+            raise ValueError("min_violated_dimensions must be >= 1")
+        if self.score_dimension_count < 1:
+            raise ValueError("score_dimension_count must be >= 1")
+        if self.min_violated_dimensions > self.score_dimension_count:
+            raise ValueError("min_violated_dimensions must be <= score_dimension_count")
 
     def evaluate(self, measurements: dict[str, float], averages: dict[str, float]) -> AverageRatioDecision:
         length = float(measurements["length"])
@@ -69,8 +82,12 @@ class AverageRatioInspector:
 
         violated_dimensions = len(reasons)
         return AverageRatioDecision(
-            result="suspected_defect" if violated_dimensions >= 1 else "normal",
-            score=violated_dimensions / 2.0,
+            result=(
+                "suspected_defect"
+                if violated_dimensions >= self.min_violated_dimensions
+                else "normal"
+            ),
+            score=violated_dimensions / float(self.score_dimension_count),
             reasons=reasons,
             thresholds={
                 "length_avg": average_length,
@@ -112,7 +129,6 @@ class AverageRatioInspector:
 __all__ = [
     "AUTO_BASELINE_INSPECTION_MODE",
     "AVERAGE_RATIO_INSPECTION_MODE",
-    "DEFAULT_INSPECTION_MODE",
     "SUPPORTED_INSPECTION_MODES",
     "AverageRatioDecision",
     "AverageRatioInspector",

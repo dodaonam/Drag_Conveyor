@@ -15,6 +15,16 @@ class OutputFormatLike(Protocol):
     num_mask_coeffs: int
 
 
+class PostprocessLike(Protocol):
+    conf_threshold: float
+    iou_threshold: float
+    target_class_ids: list[int]
+    mask_threshold: float
+    crop_mask_to_bbox: bool
+    min_contour_area: float
+    contour_mode: str
+
+
 class YoloSegPostprocessor:
     """Decode YOLO segmentation outputs into contour-ready detections."""
 
@@ -46,8 +56,7 @@ class YoloSegPostprocessor:
         proto_output: np.ndarray,
         preprocess,
         output_format: OutputFormatLike,
-        conf_threshold: float,
-        iou_threshold: float,
+        postprocess_config: PostprocessLike,
         detection_factory: Callable[..., object],
     ) -> list[object]:
         raw_det = self.normalize_detection_output_shape(det_output, output_format=output_format)
@@ -66,7 +75,7 @@ class YoloSegPostprocessor:
         decoded = self._decode_rows(
             raw=raw,
             output_format=output_format,
-            conf_threshold=conf_threshold,
+            conf_threshold=postprocess_config.conf_threshold,
         )
         if decoded is None:
             return []
@@ -75,9 +84,9 @@ class YoloSegPostprocessor:
         if boxes_model.shape[0] == 0:
             return []
 
-        # V1 inspects white_bar class (class_id=0).
-        if int(output_format.num_classes) > 1:
-            keep_cls = class_ids == 0
+        target_class_ids = np.array(postprocess_config.target_class_ids, dtype=np.int32)
+        if target_class_ids.size > 0:
+            keep_cls = np.isin(class_ids, target_class_ids)
             boxes_model = boxes_model[keep_cls]
             class_ids = class_ids[keep_cls]
             scores = scores[keep_cls]
@@ -85,7 +94,7 @@ class YoloSegPostprocessor:
             if boxes_model.shape[0] == 0:
                 return []
 
-        keep_nms = _nms_xyxy(boxes_model, scores, iou_threshold)
+        keep_nms = _nms_xyxy(boxes_model, scores, postprocess_config.iou_threshold)
         boxes_model = boxes_model[keep_nms]
         class_ids = class_ids[keep_nms]
         scores = scores[keep_nms]
@@ -114,23 +123,36 @@ class YoloSegPostprocessor:
             )
 
             mask_roi_prob = _undo_letterbox_mask(mask_input, preprocess)
-            mask_roi = (mask_roi_prob >= 0.5).astype(np.uint8)
+            mask_roi = (mask_roi_prob >= postprocess_config.mask_threshold).astype(np.uint8)
 
             x1r, y1r, x2r, y2r = _model_box_to_roi_xyxy(box_model, preprocess)
-            x1i, y1i, x2i, y2i = int(x1r), int(y1r), int(x2r), int(y2r)
-            bbox_mask = np.zeros_like(mask_roi)
-            bbox_mask[y1i:y2i, x1i:x2i] = mask_roi[y1i:y2i, x1i:x2i]
-            mask_roi = bbox_mask
+            if postprocess_config.crop_mask_to_bbox:
+                x1i, y1i, x2i, y2i = int(x1r), int(y1r), int(x2r), int(y2r)
+                bbox_mask = np.zeros_like(mask_roi)
+                bbox_mask[y1i:y2i, x1i:x2i] = mask_roi[y1i:y2i, x1i:x2i]
+                mask_roi = bbox_mask
 
             contours, _ = cv2.findContours(mask_roi, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if not contours:
                 continue
 
-            valid_contours = [contour for contour in contours if cv2.contourArea(contour) > 1.0]
+            valid_contours = [
+                contour
+                for contour in contours
+                if cv2.contourArea(contour) > postprocess_config.min_contour_area
+            ]
             if not valid_contours:
                 continue
 
-            contour_roi = max(valid_contours, key=cv2.contourArea)
+            if postprocess_config.contour_mode == "largest":
+                contour_roi = max(valid_contours, key=cv2.contourArea)
+                moments = cv2.moments(contour_roi)
+            elif postprocess_config.contour_mode == "union":
+                contour_roi = np.concatenate(valid_contours, axis=0)
+                moments = cv2.moments(mask_roi)
+            else:
+                raise ValueError(f"Unsupported contour_mode: {postprocess_config.contour_mode}")
+
             x, y, w_box, h_box = cv2.boundingRect(contour_roi)
             x1r = float(x)
             y1r = float(y)
@@ -141,7 +163,6 @@ class YoloSegPostprocessor:
             contour_frame[:, 0, 0] += roi_x
             contour_frame[:, 0, 1] += roi_y
 
-            moments = cv2.moments(contour_roi)
             if moments["m00"] > 0:
                 cx = float(moments["m10"] / moments["m00"])
                 cy = float(moments["m01"] / moments["m00"])
