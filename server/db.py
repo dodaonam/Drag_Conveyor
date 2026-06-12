@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Generator
 
 DB_PATH = Path(__file__).parent / "jobs.db"
-_DEFAULT_INSPECTION_MODE = "average_ratio"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -18,7 +17,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     object_key          TEXT,
     content_type        TEXT,
     size_bytes          INTEGER,
-    inspection_mode     TEXT NOT NULL DEFAULT 'average_ratio',
+    inspection_mode     TEXT NOT NULL,
     roi_config_json     TEXT,
     upload_completed_at TEXT,
     result_summary_json TEXT,
@@ -50,7 +49,7 @@ def create_job(
     object_key: str,
     content_type: str,
     size_bytes: int,
-    inspection_mode: str = _DEFAULT_INSPECTION_MODE,
+    inspection_mode: str,
     roi_config: dict,
     now: str,
 ) -> None:

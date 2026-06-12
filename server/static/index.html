@@ -365,10 +365,8 @@ const G = {
   lightboxOpen: false,
   lightboxItems: [],
   lightboxIndex: -1,
+  runtimeConfig: null,
 };
-
-const TRIGGER_POSITION_RATIO = 0.5;
-const TRIGGER_THICKNESS_RATIO = 0.25;
 
 /* ── Screen navigation ──────────────────────────────────────────────────── */
 function show(id) {
@@ -400,6 +398,14 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+async function loadRuntimeConfig() {
+  G.runtimeConfig = await api('/api/runtime-config');
+}
+
+function getTriggerBandConfig() {
+  return G.runtimeConfig?.collection?.trigger_band || null;
+}
+
 /* ── Error helpers ──────────────────────────────────────────────────────── */
 function setErr(id, msg) {
   const el = document.getElementById(id);
@@ -420,6 +426,12 @@ document.getElementById('btn-login').addEventListener('click', async () => {
     if (res.status === 401) { setErr('err-login', 'Mã truy cập không đúng'); return; }
   } catch (_) { /* network error — proceed */ }
   localStorage.setItem('dc_token', token);
+  try {
+    await loadRuntimeConfig();
+  } catch (e) {
+    if (e.status !== 401) setErr('err-login', 'Không tải được cấu hình hệ thống: ' + e.message);
+    return;
+  }
   show('s-setup');
 });
 
@@ -684,26 +696,29 @@ function redraw() {
   ctx.setLineDash(G.roiMode === 'editing' ? [6, 3] : []);
   ctx.strokeRect(G.roi.x + 1, G.roi.y + 1, G.roi.w - 2, G.roi.h - 2);
 
-  // Trigger band fill
-  const cy = G.roi.y + G.roi.h * TRIGGER_POSITION_RATIO;
-  const ht = G.roi.h * TRIGGER_THICKNESS_RATIO / 2;
-  ctx.setLineDash([]);
-  ctx.fillStyle = 'rgba(34,211,238,.28)';
-  ctx.fillRect(G.roi.x, cy - ht, G.roi.w, ht * 2);
+  const bandConfig = getTriggerBandConfig();
+  if (bandConfig) {
+    // Trigger band fill
+    const cy = G.roi.y + G.roi.h * Number(bandConfig.position_ratio);
+    const ht = G.roi.h * Number(bandConfig.thickness_ratio) / 2;
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(34,211,238,.28)';
+    ctx.fillRect(G.roi.x, cy - ht, G.roi.w, ht * 2);
 
-  // Band border
-  ctx.strokeStyle = '#22d3ee';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(G.roi.x, cy - ht, G.roi.w, ht * 2);
+    // Band border
+    ctx.strokeStyle = '#22d3ee';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(G.roi.x, cy - ht, G.roi.w, ht * 2);
 
-  // Band centre line
-  ctx.strokeStyle = '#06b6d4';
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([4, 3]);
-  ctx.beginPath();
-  ctx.moveTo(G.roi.x, cy); ctx.lineTo(G.roi.x + G.roi.w, cy);
-  ctx.stroke();
-  ctx.setLineDash([]);
+    // Band centre line
+    ctx.strokeStyle = '#06b6d4';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(G.roi.x, cy); ctx.lineTo(G.roi.x + G.roi.w, cy);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   if (G.roiMode === 'editing') drawRoiHandles();
 }
@@ -1014,8 +1029,26 @@ document.addEventListener('keydown', e => {
 });
 
 /* ── Init ───────────────────────────────────────────────────────────────── */
-updateRoiControls();
-show(G.token ? 's-setup' : 's-login');
+async function init() {
+  updateRoiControls();
+  if (!G.token) {
+    show('s-login');
+    return;
+  }
+  try {
+    await loadRuntimeConfig();
+    show('s-setup');
+  } catch (e) {
+    if (e.status !== 401) {
+      localStorage.removeItem('dc_token');
+      G.token = '';
+      show('s-login');
+      setErr('err-login', 'Không tải được cấu hình hệ thống: ' + e.message);
+    }
+  }
+}
+
+init();
 </script>
 </body>
 </html>

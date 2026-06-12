@@ -20,7 +20,8 @@ import db
 import r2
 import settings
 import worker
-from drag_conveyor.inspection_modes import DEFAULT_INSPECTION_MODE, is_supported_inspection_mode
+from drag_conveyor.config import Profile, load_profile
+from drag_conveyor.inspection_modes import is_supported_inspection_mode
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,13 @@ _STATUS_MESSAGES = {
     "failed": "Xử lý thất bại.",
 }
 
+
+def _load_base_profile() -> Profile:
+    try:
+        return load_profile(settings.BASE_PROFILE_PATH)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Invalid base profile: {exc}") from exc
+
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class RoiIn(BaseModel):
@@ -103,11 +111,13 @@ class CreateJobIn(BaseModel):
     content_type: str
     size_bytes: int
     roi: RoiIn
-    inspection_mode: str = DEFAULT_INSPECTION_MODE
+    inspection_mode: str | None = None
 
     @field_validator("inspection_mode")
     @classmethod
-    def _check_inspection_mode(cls, v: str) -> str:
+    def _check_inspection_mode(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
         if not is_supported_inspection_mode(v):
             raise ValueError(f"unsupported inspection_mode: {v}")
         return v
@@ -141,10 +151,34 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# ── GET /api/runtime-config ─────────────────────────────────────────────────
+
+@app.get("/api/runtime-config", dependencies=[Depends(require_auth)])
+def runtime_config() -> dict[str, Any]:
+    profile = _load_base_profile()
+    band = profile.collection.trigger_band
+    return {
+        "inspection": {
+            "mode": profile.inspection.mode,
+        },
+        "collection": {
+            "trigger_band": {
+                "position_ratio": band.position_ratio,
+                "thickness_ratio": band.thickness_ratio,
+                "min_overlap_ratio": band.min_overlap_ratio,
+                "pending_ttl_frames": band.pending_ttl_frames,
+                "allow_inside_band_trigger": band.allow_inside_band_trigger,
+            }
+        },
+    }
+
+
 # ── POST /api/jobs ─────────────────────────────────────────────────────────────
 
 @app.post("/api/jobs", response_model=CreateJobOut, dependencies=[Depends(require_auth)])
 def create_job(body: CreateJobIn) -> CreateJobOut:
+    profile = _load_base_profile()
+    inspection_mode = body.inspection_mode or profile.inspection.mode
     if body.content_type not in _ALLOWED_CONTENT_TYPES:
         raise HTTPException(status_code=422, detail=f"Unsupported content_type: {body.content_type}")
     if body.size_bytes > settings.MAX_UPLOAD_BYTES:
@@ -171,7 +205,7 @@ def create_job(body: CreateJobIn) -> CreateJobOut:
         object_key=object_key,
         content_type=body.content_type,
         size_bytes=body.size_bytes,
-        inspection_mode=body.inspection_mode,
+        inspection_mode=inspection_mode,
         roi_config=roi.model_dump(),
         now=now,
     )

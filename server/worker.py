@@ -17,7 +17,6 @@ ensure_repo_root_on_path()
 import db
 import r2
 import settings
-from drag_conveyor.inspection_modes import DEFAULT_INSPECTION_MODE
 
 LOGGER = logging.getLogger(__name__)
 
@@ -79,7 +78,6 @@ def _process_job(job_id: str) -> None:
         return
 
     roi_config: dict = json.loads(row["roi_config_json"])
-    inspection_mode = str(row["inspection_mode"] or DEFAULT_INSPECTION_MODE)
     temp_job_dir = settings.TEMP_DIR / job_id
 
     try:
@@ -100,6 +98,7 @@ def _process_job(job_id: str) -> None:
         # 3. Load base profile and apply client ROI
         db.update_status(job_id, "processing", _now())
         profile = load_profile(settings.BASE_PROFILE_PATH)
+        inspection_mode = str(row["inspection_mode"] or profile.inspection.mode)
         profile = profile.with_roi(roi_config)
 
         # 4. Run batch inspection
@@ -108,7 +107,6 @@ def _process_job(job_id: str) -> None:
         result = run_batch_inspection(
             profile=profile,
             source=str(video_path),
-            model_path=str(settings.MODEL_PATH),
             run_id=job_id,
             defect_snapshots_root=temp_snapshots,
             inspection_mode=inspection_mode,
