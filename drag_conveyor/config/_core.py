@@ -75,11 +75,12 @@ class TrackerConfig:
 @dataclass(slots=True)
 class RulesConfig:
     mode: str = "length_width_auto_baseline"
+    lower_percentile: str = "p1"
+    upper_percentile: str = "p99"
 
 
 @dataclass(slots=True)
 class CalibrationConfig:
-    target_valid_records: int = 70
     min_valid_records: int = 50
     min_inlier_ratio: float = 0.70
     max_outlier_ratio: float = 0.30
@@ -89,12 +90,16 @@ class CalibrationConfig:
 class FeatureStats:
     median: float
     mad: float
-    p5: float
-    p95: float
     p1: float | None = None
-    p99: float | None = None
     p2: float | None = None
+    p3: float | None = None
+    p4: float | None = None
+    p5: float | None = None
+    p95: float | None = None
+    p96: float | None = None
+    p97: float | None = None
     p98: float | None = None
+    p99: float | None = None
 
 
 @dataclass(slots=True)
@@ -112,12 +117,6 @@ class CalibrationResult:
 
 
 @dataclass(slots=True)
-class LoggingConfig:
-    save_defect_snapshot: bool = True
-    save_debug_frames: bool = False
-
-
-@dataclass(slots=True)
 class Profile:
     profile_version: str = PROFILE_VERSION
     profile_name: str = "line_01"
@@ -127,7 +126,6 @@ class Profile:
     rules: RulesConfig = field(default_factory=RulesConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     calibration_result: CalibrationResult | None = None
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     def clone(self) -> "Profile":
         return copy.deepcopy(self)
@@ -171,6 +169,9 @@ ROI_CONFIG_KEYS = {
     "frame_height",
 }
 
+LOWER_RULE_PERCENTILES = ("p1", "p2", "p3", "p4", "p5")
+UPPER_RULE_PERCENTILES = ("p95", "p96", "p97", "p98", "p99")
+
 
 def _parse_version(version: str) -> tuple[int, int, int]:
     parts = version.split(".")
@@ -183,15 +184,21 @@ def _parse_version(version: str) -> tuple[int, int, int]:
 
 
 def _feature_stats_from_dict(data: dict[str, Any]) -> FeatureStats:
+    p5 = float(data["p5"])
+    p95 = float(data["p95"])
     return FeatureStats(
         median=float(data["median"]),
         mad=float(data["mad"]),
-        p5=float(data["p5"]),
-        p95=float(data["p95"]),
-        p1=float(data["p1"]) if "p1" in data else None,
-        p99=float(data["p99"]) if "p99" in data else None,
-        p2=float(data.get("p2", data["p5"])),
-        p98=float(data.get("p98", data["p95"])),
+        p1=float(data.get("p1", p5)),
+        p2=float(data.get("p2", p5)),
+        p3=float(data.get("p3", p5)),
+        p4=float(data.get("p4", p5)),
+        p5=p5,
+        p95=p95,
+        p96=float(data.get("p96", p95)),
+        p97=float(data.get("p97", p95)),
+        p98=float(data.get("p98", p95)),
+        p99=float(data.get("p99", p95)),
     )
 
 
@@ -234,15 +241,12 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
     rules_raw = _required_section(data, "rules")
     cal_raw = _required_section(data, "calibration")
     trigger_raw = region_raw.get("trigger_band", {})
-    logging_raw = data.get("logging", {})
-    if not isinstance(logging_raw, dict):
-        raise ProfileError("Invalid 'logging' section")
     if not isinstance(trigger_raw, dict):
         raise ProfileError("Invalid 'inspection_region.trigger_band' section")
 
     if "direction" in region_raw:
         raise ProfileError("inspection_region.direction is no longer supported")
-    unknown_rule_keys = set(rules_raw) - {"mode"}
+    unknown_rule_keys = set(rules_raw) - {"mode", "lower_percentile", "upper_percentile"}
     if unknown_rule_keys:
         raise ProfileError(f"Unsupported rules keys: {', '.join(sorted(unknown_rule_keys))}")
     supported_trigger_keys = {
@@ -302,16 +306,13 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
             ),
             rules=RulesConfig(
                 mode=str(rules_raw.get("mode", "length_width_auto_baseline")),
+                lower_percentile=str(rules_raw.get("lower_percentile", "p1")),
+                upper_percentile=str(rules_raw.get("upper_percentile", "p99")),
             ),
             calibration=CalibrationConfig(
-                target_valid_records=int(cal_raw.get("target_valid_records", 70)),
                 min_valid_records=int(cal_raw.get("min_valid_records", 50)),
                 min_inlier_ratio=float(cal_raw.get("min_inlier_ratio", 0.70)),
                 max_outlier_ratio=float(cal_raw.get("max_outlier_ratio", 0.30)),
-            ),
-            logging=LoggingConfig(
-                save_defect_snapshot=bool(logging_raw.get("save_defect_snapshot", True)),
-                save_debug_frames=bool(logging_raw.get("save_debug_frames", False)),
             ),
         )
     except (TypeError, ValueError, KeyError) as exc:
@@ -402,12 +403,16 @@ def validate_profile(profile: Profile) -> None:
     rules = profile.rules
     if rules.mode != "length_width_auto_baseline":
         raise ProfileError("rules.mode must be 'length_width_auto_baseline'")
+    if rules.lower_percentile not in LOWER_RULE_PERCENTILES:
+        allowed = ", ".join(LOWER_RULE_PERCENTILES)
+        raise ProfileError(f"rules.lower_percentile must be one of: {allowed}")
+    if rules.upper_percentile not in UPPER_RULE_PERCENTILES:
+        allowed = ", ".join(UPPER_RULE_PERCENTILES)
+        raise ProfileError(f"rules.upper_percentile must be one of: {allowed}")
 
     calibration = profile.calibration
     if calibration.min_valid_records <= 0:
         raise ProfileError("calibration.min_valid_records must be > 0")
-    if calibration.target_valid_records < calibration.min_valid_records:
-        raise ProfileError("calibration.target_valid_records must be >= min_valid_records")
     if not 0 <= calibration.min_inlier_ratio <= 1:
         raise ProfileError("calibration.min_inlier_ratio must be in [0, 1]")
     if not 0 <= calibration.max_outlier_ratio <= 1:

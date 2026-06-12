@@ -46,17 +46,14 @@
     "min_hits": 2
   },
   "rules": {
-    "mode": "length_width_auto_baseline"
+    "mode": "length_width_auto_baseline",
+    "lower_percentile": "p1",
+    "upper_percentile": "p99"
   },
   "calibration": {
-    "target_valid_records": 70,
     "min_valid_records": 50,
     "min_inlier_ratio": 0.7,
     "max_outlier_ratio": 0.3
   },
-  "calibration_result": null,
-  "logging": {
-    "save_defect_snapshot": true,
-    "save_debug_frames": false
-  }
+  "calibration_result": null
 }

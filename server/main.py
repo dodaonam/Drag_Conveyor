@@ -102,7 +102,6 @@ class CreateJobIn(BaseModel):
 
     content_type: str
     size_bytes: int
-    filename: str
     roi: RoiIn
     inspection_mode: str = DEFAULT_INSPECTION_MODE
 
@@ -223,8 +222,6 @@ def get_result(job_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=f"Job not completed: {row['status']}")
 
     summary: dict = json.loads(row["result_summary_json"])
-    summary.pop("csv_key", None)
-    summary.pop("csv_url", None)
 
     # Generate presigned GET URLs for each asset
     for defect in summary.get("defects", []):

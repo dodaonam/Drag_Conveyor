@@ -14,9 +14,6 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
 ]
 
-[project.scripts]
-drag-conveyor = "drag_conveyor.app.cli:main"
-
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

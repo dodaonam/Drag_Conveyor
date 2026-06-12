@@ -88,10 +88,6 @@ class TriggerEngine:
         self._pending: dict[int, int] = {}
         self._processed: set[int] = set()
 
-    def reset(self) -> None:
-        self._pending.clear()
-        self._processed.clear()
-
     def begin_frame(self) -> None:
         expired: list[int] = []
         for track_id, ttl in self._pending.items():

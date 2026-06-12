@@ -136,6 +136,19 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
   background: rgba(15, 23, 42, .74); color: #fff; font-size: 24px;
   cursor: pointer;
 }
+.lightbox-nav {
+  position: absolute; top: 50%; transform: translateY(-50%); z-index: 2;
+  width: 48px; height: 48px; border: 1px solid rgba(226, 232, 240, .4);
+  border-radius: 999px; background: rgba(15, 23, 42, .72);
+  color: #fff; font-size: 30px; line-height: 1; cursor: pointer;
+}
+.lightbox-nav:hover:not(:disabled),
+.lightbox-close:hover { background: rgba(15, 23, 42, .9); }
+.lightbox-nav:disabled {
+  opacity: .32; cursor: default;
+}
+.lightbox-prev { left: 12px; }
+.lightbox-next { right: 12px; }
 .lightbox-image {
   width: 100%; max-height: calc(92vh - 54px);
   object-fit: contain; border-radius: 14px; background: #020617;
@@ -326,6 +339,8 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
 <div id="lightbox" class="lightbox" aria-hidden="true">
   <div class="lightbox-panel">
     <button class="lightbox-close" id="lightbox-close" type="button" aria-label="Đóng ảnh">×</button>
+    <button class="lightbox-nav lightbox-prev" id="lightbox-prev" type="button" aria-label="Ảnh trước">‹</button>
+    <button class="lightbox-nav lightbox-next" id="lightbox-next" type="button" aria-label="Ảnh sau">›</button>
     <img id="lightbox-image" class="lightbox-image" alt="Ảnh lỗi phóng to">
     <div id="lightbox-meta" class="lightbox-meta"></div>
   </div>
@@ -348,6 +363,8 @@ const G = {
   dragStart:  null,
   pollTid:    null,
   lightboxOpen: false,
+  lightboxItems: [],
+  lightboxIndex: -1,
 };
 
 const TRIGGER_POSITION_RATIO = 0.5;
@@ -744,7 +761,6 @@ document.getElementById('btn-submit').addEventListener('click', async () => {
   const body = {
     content_type: mime,
     size_bytes:   G.file.size,
-    filename:     G.file.name,
     roi: {
       x: vRoi.x, y: vRoi.y, w: vRoi.w, h: vRoi.h,
       frame_width:  G.videoW,
@@ -857,6 +873,10 @@ const REASONS = {
   width_too_large:  'Quá rộng',
 };
 
+function formatReasons(reasons) {
+  return (reasons || []).map(r => REASONS[r] || r).join(', ');
+}
+
 async function loadResult() {
   const data = await api('/api/jobs/' + G.jobId + '/result');
   show('s-result');
@@ -868,36 +888,44 @@ async function loadResult() {
 
   // Defects
   const defects = data.defects || [];
+  G.lightboxItems = defects
+    .filter(d => d.snapshot_url)
+    .map(d => ({
+      src: d.snapshot_url,
+      meta: `Track #${d.track_id} · Dài: ${(d.length || 0).toFixed(1)} · Rộng: ${(d.width || 0).toFixed(1)} · Lỗi: ${formatReasons(d.reasons)}`,
+    }));
+  G.lightboxIndex = -1;
   if (defects.length === 0) {
     document.getElementById('no-defect').style.display    = 'block';
     document.getElementById('defect-section').style.display = 'none';
   } else {
     document.getElementById('no-defect').style.display    = 'none';
     document.getElementById('defect-section').style.display = 'block';
-    document.getElementById('defect-list').innerHTML = defects.map(d => `
-      <div class="defect-card">
-        ${d.snapshot_url
-          ? `<img
-               src="${esc(d.snapshot_url)}"
-               loading="lazy"
-               alt="Track ${d.track_id}"
-               class="defect-preview"
-               data-fullsrc="${esc(d.snapshot_url)}"
-               data-track="${esc(String(d.track_id))}"
-               data-length="${esc(((d.length || 0).toFixed(1)))}"
-               data-width="${esc(((d.width || 0).toFixed(1)))}">`
-          : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
-        <div class="defect-info">
-          <div class="defect-tags">
-            ${(d.reasons || []).map(r => `<span class="tag">${REASONS[r] || r}</span>`).join('')}
+    let snapshotIndex = 0;
+    document.getElementById('defect-list').innerHTML = defects.map(d => {
+      const currentIndex = d.snapshot_url ? snapshotIndex++ : -1;
+      return `
+        <div class="defect-card">
+          ${d.snapshot_url
+            ? `<img
+                 src="${esc(d.snapshot_url)}"
+                 loading="lazy"
+                 alt="Track ${esc(String(d.track_id))}"
+                 class="defect-preview"
+                 data-index="${currentIndex}">`
+            : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
+          <div class="defect-info">
+            <div class="defect-tags">
+              ${(d.reasons || []).map(r => `<span class="tag">${REASONS[r] || r}</span>`).join('')}
+            </div>
+            <div class="defect-dims">
+              Track #${d.track_id}
+              &nbsp;·&nbsp; Dài: ${(d.length || 0).toFixed(1)}
+              &nbsp;·&nbsp; Rộng: ${(d.width || 0).toFixed(1)}
+            </div>
           </div>
-          <div class="defect-dims">
-            Track #${d.track_id}
-            &nbsp;·&nbsp; Dài: ${(d.length || 0).toFixed(1)}
-            &nbsp;·&nbsp; Rộng: ${(d.width || 0).toFixed(1)}
-          </div>
-        </div>
-      </div>`).join('');
+        </div>`;
+    }).join('');
   }
 }
 
@@ -934,12 +962,27 @@ function esc(s) {
   return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-function openLightbox(src, meta) {
-  document.getElementById('lightbox-image').src = src;
-  document.getElementById('lightbox-meta').textContent = meta;
+function showLightboxItem(index) {
+  if (index < 0 || index >= G.lightboxItems.length) return false;
+  const item = G.lightboxItems[index];
+  G.lightboxIndex = index;
+  document.getElementById('lightbox-image').src = item.src;
+  document.getElementById('lightbox-meta').textContent = item.meta;
+  document.getElementById('lightbox-prev').disabled = index === 0;
+  document.getElementById('lightbox-next').disabled = index === G.lightboxItems.length - 1;
+  return true;
+}
+
+function openLightbox(index) {
+  if (!showLightboxItem(index)) return;
   document.getElementById('lightbox').classList.add('open');
   document.getElementById('lightbox').setAttribute('aria-hidden', 'false');
   G.lightboxOpen = true;
+}
+
+function moveLightbox(delta) {
+  if (!G.lightboxOpen) return;
+  showLightboxItem(G.lightboxIndex + delta);
 }
 
 function closeLightbox() {
@@ -948,21 +991,26 @@ function closeLightbox() {
   document.getElementById('lightbox-image').src = '';
   document.getElementById('lightbox-meta').textContent = '';
   G.lightboxOpen = false;
+  G.lightboxIndex = -1;
 }
 
 document.getElementById('defect-list').addEventListener('click', e => {
   const img = e.target.closest('.defect-preview');
   if (!img) return;
-  const meta = `Track #${img.dataset.track} · Dài: ${img.dataset.length} · Rộng: ${img.dataset.width}`;
-  openLightbox(img.dataset.fullsrc, meta);
+  openLightbox(Number(img.dataset.index));
 });
 
 document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+document.getElementById('lightbox-prev').addEventListener('click', () => moveLightbox(-1));
+document.getElementById('lightbox-next').addEventListener('click', () => moveLightbox(1));
 document.getElementById('lightbox').addEventListener('click', e => {
   if (e.target.id === 'lightbox') closeLightbox();
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && G.lightboxOpen) closeLightbox();
+  if (!G.lightboxOpen) return;
+  if (e.key === 'Escape') closeLightbox();
+  if (e.key === 'ArrowLeft') moveLightbox(-1);
+  if (e.key === 'ArrowRight') moveLightbox(1);
 });
 
 /* ── Init ───────────────────────────────────────────────────────────────── */

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable, Protocol
 
 import cv2
@@ -16,34 +15,8 @@ class OutputFormatLike(Protocol):
     num_mask_coeffs: int
 
 
-@dataclass(frozen=True, slots=True)
-class OutputInspection:
-    det_shape: tuple[int, ...]
-    proto_shape: tuple[int, ...]
-    normalized_det_shape: tuple[int, ...]
-    expected_feature_dim: int
-    proto_channels: int
-
-
 class YoloSegPostprocessor:
     """Decode YOLO segmentation outputs into contour-ready detections."""
-
-    def inspect_outputs(
-        self,
-        det_output: np.ndarray,
-        proto_output: np.ndarray,
-        output_format: OutputFormatLike,
-    ) -> OutputInspection:
-        raw = self.normalize_detection_output_shape(det_output, output_format=output_format)
-        if proto_output.ndim != 4:
-            raise ValueError(f"Expected proto output shape [B,C,H,W], got {proto_output.shape}")
-        return OutputInspection(
-            det_shape=tuple(det_output.shape),
-            proto_shape=tuple(proto_output.shape),
-            normalized_det_shape=tuple(raw.shape),
-            expected_feature_dim=_expected_feature_dim(output_format),
-            proto_channels=int(proto_output.shape[1]),
-        )
 
     def normalize_detection_output_shape(
         self,

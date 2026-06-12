@@ -31,10 +31,10 @@ class RuleEngine:
         length = float(measurements["length"])
         width = float(measurements["width"])
 
-        length_min = _lower(calibration_result.features["length"])
-        length_max = _upper(calibration_result.features["length"])
-        width_min = _lower(calibration_result.features["width"])
-        width_max = _upper(calibration_result.features["width"])
+        length_min = _percentile(calibration_result.features["length"], rules.lower_percentile)
+        length_max = _percentile(calibration_result.features["length"], rules.upper_percentile)
+        width_min = _percentile(calibration_result.features["width"], rules.lower_percentile)
+        width_max = _percentile(calibration_result.features["width"], rules.upper_percentile)
 
         thresholds: dict[str, float] = {
             "length_min": float(length_min),
@@ -75,16 +75,11 @@ class RuleEngine:
         )
 
 
-def _lower(stats) -> float:
-    if getattr(stats, "p1", None) is not None:
-        return float(stats.p1)
-    return float(stats.p2 if stats.p2 is not None else stats.p5)
-
-
-def _upper(stats) -> float:
-    if getattr(stats, "p99", None) is not None:
-        return float(stats.p99)
-    return float(stats.p98 if stats.p98 is not None else stats.p95)
+def _percentile(stats, name: str) -> float:
+    value = getattr(stats, name, None)
+    if value is None:
+        raise ValueError(f"Calibration feature stats missing percentile: {name}")
+    return float(value)
 
 
 __all__ = ["RuleEngine", "RuleEvaluation"]

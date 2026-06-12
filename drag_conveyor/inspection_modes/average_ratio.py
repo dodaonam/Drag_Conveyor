@@ -22,7 +22,7 @@ class AverageRatioThresholds:
     width_min_ratio: float = 0.84
     width_max_ratio: float = 1.06
     length_min_ratio: float = 0.94
-    length_max_ratio: float = 1.06
+    length_max_ratio: float = 1.1
 
 
 @dataclass(frozen=True, slots=True)

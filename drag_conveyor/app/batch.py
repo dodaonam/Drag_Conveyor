@@ -93,7 +93,6 @@ def run_batch_inspection(
     model_path: str,
     run_id: str | None = None,
     defect_snapshots_root: Path | None = None,
-    save_defect_snapshot: bool = True,
     inspection_mode: str = DEFAULT_INSPECTION_MODE,
 ) -> BatchInspectionResult:
     """Single-pass collect-all: infer full video, calibrate on all data, classify all bars."""
@@ -259,7 +258,7 @@ def run_batch_inspection(
 
     # --- Phase 4: Ghi defect snapshot (seek-based, không buffer frame) ---
     defect_snapshots_dir: Path | None = None
-    if save_defect_snapshot and defect_snapshots_root is not None:
+    if defect_snapshots_root is not None:
         defects = [r for r in classified.bars if r.result == "suspected_defect"]
         if defects:
             defect_snapshots_dir = Path(defect_snapshots_root) / run_id

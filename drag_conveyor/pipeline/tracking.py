@@ -37,10 +37,6 @@ class CentroidTracker:
         self._next_id = 1
         self._tracks: dict[int, TrackedObject] = {}
 
-    def reset(self) -> None:
-        self._next_id = 1
-        self._tracks.clear()
-
     def update(self, detections: list[Detection]) -> list[TrackedObject]:
         if not self._tracks:
             for det in detections:
