@@ -8,7 +8,53 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
-PROFILE_VERSION = "1.0.0"
+PROFILE_VERSION = "1.1.0"
+
+
+def _local_defect_default_dict(*, enabled: bool) -> dict[str, Any]:
+    return {
+        "enabled": enabled,
+        "canonical_width": 256,
+        "canonical_height": 64,
+        "min_bar_aspect_ratio": 2.0,
+        "min_endpoint_x_separation_ratio": 0.25,
+        "zone_left": [0.0, 0.33],
+        "zone_middle": [0.33, 0.66],
+        "zone_right": [0.66, 1.0],
+        "shape_threshold": 0.12,
+        "middle_shape_threshold": 0.14,
+        "both_sides_threshold": 0.10,
+        "severe_shape_threshold": 0.30,
+        "missing_weight": 1.0,
+        "extra_weight": 0.6,
+        "min_zone_defect_weighted_pixels": 30.0,
+        "min_template_samples": 30,
+        "template_mask_threshold": 0.5,
+        "min_template_area_ratio": 0.10,
+        "max_template_area_ratio": 0.98,
+        "min_baseline_alignment_iou_p50": 0.65,
+        "min_baseline_alignment_iou_p10": 0.45,
+        "max_canonicalize_failure_ratio": 0.20,
+        "min_color_pixels_per_sample": 200,
+        "color_enabled": True,
+        "color_delta_threshold": 100.0,
+        "color_abnormal_ratio_threshold": 0.15,
+        "color_abnormal_ratio_margin": 0.0,
+        "color_delta_p95_threshold": 115.0,
+        "dark_pixel_enabled": True,
+        "dark_l_threshold": 60.0,
+        "dark_pixel_ratio_threshold": 0.12,
+        "dark_pixel_ratio_margin": 0.0,
+        "erode_mask_iterations": 1,
+        "morph_kernel_size": 3,
+        "min_alignment_iou": 0.35,
+        "orientation_flip_x": False,
+        "debug_save_canonical": False,
+    }
+
+
+DEFAULT_LOCAL_DEFECT_DICT_FOR_BASE_PROFILE = _local_defect_default_dict(enabled=True)
+DEFAULT_LOCAL_DEFECT_DICT_FOR_MIGRATION = _local_defect_default_dict(enabled=False)
 
 
 class ProfileError(Exception):
@@ -164,11 +210,53 @@ class AverageRatioConfig:
 
 
 @dataclass(slots=True)
+class LocalDefectConfig:
+    enabled: bool
+    canonical_width: int
+    canonical_height: int
+    min_bar_aspect_ratio: float
+    min_endpoint_x_separation_ratio: float
+    zone_left: list[float]
+    zone_middle: list[float]
+    zone_right: list[float]
+    shape_threshold: float
+    middle_shape_threshold: float
+    both_sides_threshold: float
+    severe_shape_threshold: float
+    missing_weight: float
+    extra_weight: float
+    min_zone_defect_weighted_pixels: float
+    min_template_samples: int
+    template_mask_threshold: float
+    min_template_area_ratio: float
+    max_template_area_ratio: float
+    min_baseline_alignment_iou_p50: float
+    min_baseline_alignment_iou_p10: float
+    max_canonicalize_failure_ratio: float
+    min_color_pixels_per_sample: int
+    color_enabled: bool
+    color_delta_threshold: float
+    color_abnormal_ratio_threshold: float
+    color_abnormal_ratio_margin: float
+    color_delta_p95_threshold: float
+    dark_pixel_enabled: bool
+    dark_l_threshold: float
+    dark_pixel_ratio_threshold: float
+    dark_pixel_ratio_margin: float
+    erode_mask_iterations: int
+    morph_kernel_size: int
+    min_alignment_iou: float
+    orientation_flip_x: bool
+    debug_save_canonical: bool
+
+
+@dataclass(slots=True)
 class InspectionConfig:
     mode: str
     defect_policy: DefectPolicyConfig
     auto_baseline: AutoBaselineConfig
     average_ratio: AverageRatioConfig
+    local_defect: LocalDefectConfig
 
 
 @dataclass(slots=True)
@@ -347,6 +435,15 @@ def _required_int_list(data: dict[str, Any], key: str, label: str | None = None)
     return list(values)
 
 
+def _required_float_pair(data: dict[str, Any], key: str, label: str) -> list[float]:
+    values = _required_list(data, key, label)
+    if len(values) != 2:
+        raise ProfileError(f"{label} must contain exactly 2 numbers")
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in values):
+        raise ProfileError(f"{label} must contain only numbers")
+    return [float(values[0]), float(values[1])]
+
+
 def _reject_unknown_keys(data: dict[str, Any], allowed: set[str], label: str) -> None:
     unknown = set(data) - allowed
     if unknown:
@@ -362,6 +459,17 @@ def migrate_profile_dict(raw: dict[str, Any]) -> dict[str, Any]:
     requested = _parse_version(version)
     if requested == current:
         return raw
+    if requested == (1, 0, 0) and current == (1, 1, 0):
+        migrated = copy.deepcopy(raw)
+        migrated["profile_version"] = PROFILE_VERSION
+        inspection = migrated.setdefault("inspection", {})
+        if not isinstance(inspection, dict):
+            raise ProfileError("Missing or invalid 'inspection' section")
+        inspection.setdefault(
+            "local_defect",
+            copy.deepcopy(DEFAULT_LOCAL_DEFECT_DICT_FOR_MIGRATION),
+        )
+        return migrated
     if requested > current:
         raise ProfileError(
             f"Profile version {version} is newer than supported {PROFILE_VERSION}. Please upgrade the app."
@@ -397,6 +505,11 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
         inspection_raw,
         "average_ratio",
         "inspection.average_ratio",
+    )
+    local_defect_raw = _required_section(
+        inspection_raw,
+        "local_defect",
+        "inspection.local_defect",
     )
     calibration_raw = _required_section(
         auto_raw,
@@ -465,7 +578,7 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
     )
     _reject_unknown_keys(
         inspection_raw,
-        {"mode", "defect_policy", "auto_baseline", "average_ratio"},
+        {"mode", "defect_policy", "auto_baseline", "average_ratio", "local_defect"},
         "inspection",
     )
     _reject_unknown_keys(
@@ -482,6 +595,49 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
         average_ratio_raw,
         {"width_min_ratio", "width_max_ratio", "length_min_ratio", "length_max_ratio"},
         "inspection.average_ratio",
+    )
+    _reject_unknown_keys(
+        local_defect_raw,
+        {
+            "enabled",
+            "canonical_width",
+            "canonical_height",
+            "min_bar_aspect_ratio",
+            "min_endpoint_x_separation_ratio",
+            "zone_left",
+            "zone_middle",
+            "zone_right",
+            "shape_threshold",
+            "middle_shape_threshold",
+            "both_sides_threshold",
+            "severe_shape_threshold",
+            "missing_weight",
+            "extra_weight",
+            "min_zone_defect_weighted_pixels",
+            "min_template_samples",
+            "template_mask_threshold",
+            "min_template_area_ratio",
+            "max_template_area_ratio",
+            "min_baseline_alignment_iou_p50",
+            "min_baseline_alignment_iou_p10",
+            "max_canonicalize_failure_ratio",
+            "min_color_pixels_per_sample",
+            "color_enabled",
+            "color_delta_threshold",
+            "color_abnormal_ratio_threshold",
+            "color_abnormal_ratio_margin",
+            "color_delta_p95_threshold",
+            "dark_pixel_enabled",
+            "dark_l_threshold",
+            "dark_pixel_ratio_threshold",
+            "dark_pixel_ratio_margin",
+            "erode_mask_iterations",
+            "morph_kernel_size",
+            "min_alignment_iou",
+            "orientation_flip_x",
+            "debug_save_canonical",
+        },
+        "inspection.local_defect",
     )
     _reject_unknown_keys(
         calibration_raw,
@@ -741,6 +897,193 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                         "inspection.average_ratio.length_max_ratio",
                     ),
                 ),
+                local_defect=LocalDefectConfig(
+                    enabled=_required_bool(
+                        local_defect_raw,
+                        "enabled",
+                        "inspection.local_defect.enabled",
+                    ),
+                    canonical_width=_required_int(
+                        local_defect_raw,
+                        "canonical_width",
+                        "inspection.local_defect.canonical_width",
+                    ),
+                    canonical_height=_required_int(
+                        local_defect_raw,
+                        "canonical_height",
+                        "inspection.local_defect.canonical_height",
+                    ),
+                    min_bar_aspect_ratio=_required_float(
+                        local_defect_raw,
+                        "min_bar_aspect_ratio",
+                        "inspection.local_defect.min_bar_aspect_ratio",
+                    ),
+                    min_endpoint_x_separation_ratio=_required_float(
+                        local_defect_raw,
+                        "min_endpoint_x_separation_ratio",
+                        "inspection.local_defect.min_endpoint_x_separation_ratio",
+                    ),
+                    zone_left=_required_float_pair(
+                        local_defect_raw,
+                        "zone_left",
+                        "inspection.local_defect.zone_left",
+                    ),
+                    zone_middle=_required_float_pair(
+                        local_defect_raw,
+                        "zone_middle",
+                        "inspection.local_defect.zone_middle",
+                    ),
+                    zone_right=_required_float_pair(
+                        local_defect_raw,
+                        "zone_right",
+                        "inspection.local_defect.zone_right",
+                    ),
+                    shape_threshold=_required_float(
+                        local_defect_raw,
+                        "shape_threshold",
+                        "inspection.local_defect.shape_threshold",
+                    ),
+                    middle_shape_threshold=_required_float(
+                        local_defect_raw,
+                        "middle_shape_threshold",
+                        "inspection.local_defect.middle_shape_threshold",
+                    ),
+                    both_sides_threshold=_required_float(
+                        local_defect_raw,
+                        "both_sides_threshold",
+                        "inspection.local_defect.both_sides_threshold",
+                    ),
+                    severe_shape_threshold=_required_float(
+                        local_defect_raw,
+                        "severe_shape_threshold",
+                        "inspection.local_defect.severe_shape_threshold",
+                    ),
+                    missing_weight=_required_float(
+                        local_defect_raw,
+                        "missing_weight",
+                        "inspection.local_defect.missing_weight",
+                    ),
+                    extra_weight=_required_float(
+                        local_defect_raw,
+                        "extra_weight",
+                        "inspection.local_defect.extra_weight",
+                    ),
+                    min_zone_defect_weighted_pixels=_required_float(
+                        local_defect_raw,
+                        "min_zone_defect_weighted_pixels",
+                        "inspection.local_defect.min_zone_defect_weighted_pixels",
+                    ),
+                    min_template_samples=_required_int(
+                        local_defect_raw,
+                        "min_template_samples",
+                        "inspection.local_defect.min_template_samples",
+                    ),
+                    template_mask_threshold=_required_float(
+                        local_defect_raw,
+                        "template_mask_threshold",
+                        "inspection.local_defect.template_mask_threshold",
+                    ),
+                    min_template_area_ratio=_required_float(
+                        local_defect_raw,
+                        "min_template_area_ratio",
+                        "inspection.local_defect.min_template_area_ratio",
+                    ),
+                    max_template_area_ratio=_required_float(
+                        local_defect_raw,
+                        "max_template_area_ratio",
+                        "inspection.local_defect.max_template_area_ratio",
+                    ),
+                    min_baseline_alignment_iou_p50=_required_float(
+                        local_defect_raw,
+                        "min_baseline_alignment_iou_p50",
+                        "inspection.local_defect.min_baseline_alignment_iou_p50",
+                    ),
+                    min_baseline_alignment_iou_p10=_required_float(
+                        local_defect_raw,
+                        "min_baseline_alignment_iou_p10",
+                        "inspection.local_defect.min_baseline_alignment_iou_p10",
+                    ),
+                    max_canonicalize_failure_ratio=_required_float(
+                        local_defect_raw,
+                        "max_canonicalize_failure_ratio",
+                        "inspection.local_defect.max_canonicalize_failure_ratio",
+                    ),
+                    min_color_pixels_per_sample=_required_int(
+                        local_defect_raw,
+                        "min_color_pixels_per_sample",
+                        "inspection.local_defect.min_color_pixels_per_sample",
+                    ),
+                    color_enabled=_required_bool(
+                        local_defect_raw,
+                        "color_enabled",
+                        "inspection.local_defect.color_enabled",
+                    ),
+                    color_delta_threshold=_required_float(
+                        local_defect_raw,
+                        "color_delta_threshold",
+                        "inspection.local_defect.color_delta_threshold",
+                    ),
+                    color_abnormal_ratio_threshold=_required_float(
+                        local_defect_raw,
+                        "color_abnormal_ratio_threshold",
+                        "inspection.local_defect.color_abnormal_ratio_threshold",
+                    ),
+                    color_abnormal_ratio_margin=_required_float(
+                        local_defect_raw,
+                        "color_abnormal_ratio_margin",
+                        "inspection.local_defect.color_abnormal_ratio_margin",
+                    ),
+                    color_delta_p95_threshold=_required_float(
+                        local_defect_raw,
+                        "color_delta_p95_threshold",
+                        "inspection.local_defect.color_delta_p95_threshold",
+                    ),
+                    dark_pixel_enabled=_required_bool(
+                        local_defect_raw,
+                        "dark_pixel_enabled",
+                        "inspection.local_defect.dark_pixel_enabled",
+                    ),
+                    dark_l_threshold=_required_float(
+                        local_defect_raw,
+                        "dark_l_threshold",
+                        "inspection.local_defect.dark_l_threshold",
+                    ),
+                    dark_pixel_ratio_threshold=_required_float(
+                        local_defect_raw,
+                        "dark_pixel_ratio_threshold",
+                        "inspection.local_defect.dark_pixel_ratio_threshold",
+                    ),
+                    dark_pixel_ratio_margin=_required_float(
+                        local_defect_raw,
+                        "dark_pixel_ratio_margin",
+                        "inspection.local_defect.dark_pixel_ratio_margin",
+                    ),
+                    erode_mask_iterations=_required_int(
+                        local_defect_raw,
+                        "erode_mask_iterations",
+                        "inspection.local_defect.erode_mask_iterations",
+                    ),
+                    morph_kernel_size=_required_int(
+                        local_defect_raw,
+                        "morph_kernel_size",
+                        "inspection.local_defect.morph_kernel_size",
+                    ),
+                    min_alignment_iou=_required_float(
+                        local_defect_raw,
+                        "min_alignment_iou",
+                        "inspection.local_defect.min_alignment_iou",
+                    ),
+                    orientation_flip_x=_required_bool(
+                        local_defect_raw,
+                        "orientation_flip_x",
+                        "inspection.local_defect.orientation_flip_x",
+                    ),
+                    debug_save_canonical=_required_bool(
+                        local_defect_raw,
+                        "debug_save_canonical",
+                        "inspection.local_defect.debug_save_canonical",
+                    ),
+                ),
             ),
         )
     except (TypeError, ValueError, KeyError) as exc:
@@ -866,6 +1209,98 @@ def validate_profile(profile: Profile) -> None:
         raise ProfileError("inspection.average_ratio.width_min_ratio must be < width_max_ratio")
     if average_ratio.length_min_ratio >= average_ratio.length_max_ratio:
         raise ProfileError("inspection.average_ratio.length_min_ratio must be < length_max_ratio")
+
+    local = inspection.local_defect
+    if local.canonical_width <= 0:
+        raise ProfileError("inspection.local_defect.canonical_width must be > 0")
+    if local.canonical_height <= 0:
+        raise ProfileError("inspection.local_defect.canonical_height must be > 0")
+    if local.min_bar_aspect_ratio < 1.0:
+        raise ProfileError("inspection.local_defect.min_bar_aspect_ratio must be >= 1.0")
+    if not 0 <= local.min_endpoint_x_separation_ratio <= 1:
+        raise ProfileError(
+            "inspection.local_defect.min_endpoint_x_separation_ratio must be in [0, 1]"
+        )
+    for name, zone in (
+        ("inspection.local_defect.zone_left", local.zone_left),
+        ("inspection.local_defect.zone_middle", local.zone_middle),
+        ("inspection.local_defect.zone_right", local.zone_right),
+    ):
+        if len(zone) != 2:
+            raise ProfileError(f"{name} must contain exactly 2 numbers")
+        start, end = zone
+        if not 0 <= start < end <= 1:
+            raise ProfileError(f"{name} must satisfy 0.0 <= start < end <= 1.0")
+    if local.zone_left[1] > local.zone_middle[0]:
+        raise ProfileError(
+            "inspection.local_defect zones must be ordered and non-overlapping: left.end <= middle.start"
+        )
+    if local.zone_middle[1] > local.zone_right[0]:
+        raise ProfileError(
+            "inspection.local_defect zones must be ordered and non-overlapping: middle.end <= right.start"
+        )
+    if local.shape_threshold <= 0:
+        raise ProfileError("inspection.local_defect.shape_threshold must be > 0")
+    if local.middle_shape_threshold <= 0:
+        raise ProfileError("inspection.local_defect.middle_shape_threshold must be > 0")
+    if local.both_sides_threshold <= 0:
+        raise ProfileError("inspection.local_defect.both_sides_threshold must be > 0")
+    if local.severe_shape_threshold <= 0:
+        raise ProfileError("inspection.local_defect.severe_shape_threshold must be > 0")
+    if local.severe_shape_threshold < local.shape_threshold:
+        raise ProfileError(
+            "inspection.local_defect.severe_shape_threshold must be >= shape_threshold"
+        )
+    if local.missing_weight < 0:
+        raise ProfileError("inspection.local_defect.missing_weight must be >= 0")
+    if local.extra_weight < 0:
+        raise ProfileError("inspection.local_defect.extra_weight must be >= 0")
+    if local.min_zone_defect_weighted_pixels < 0:
+        raise ProfileError(
+            "inspection.local_defect.min_zone_defect_weighted_pixels must be >= 0"
+        )
+    if local.min_template_samples <= 0:
+        raise ProfileError("inspection.local_defect.min_template_samples must be > 0")
+    if not 0 < local.template_mask_threshold < 1:
+        raise ProfileError("inspection.local_defect.template_mask_threshold must be in (0, 1)")
+    if not 0 < local.min_template_area_ratio < local.max_template_area_ratio <= 1:
+        raise ProfileError(
+            "inspection.local_defect must satisfy 0.0 < min_template_area_ratio < max_template_area_ratio <= 1.0"
+        )
+    if not 0 <= local.min_baseline_alignment_iou_p10 <= local.min_baseline_alignment_iou_p50 <= 1:
+        raise ProfileError(
+            "inspection.local_defect must satisfy 0.0 <= min_baseline_alignment_iou_p10 <= min_baseline_alignment_iou_p50 <= 1.0"
+        )
+    if not 0 <= local.max_canonicalize_failure_ratio < 1:
+        raise ProfileError(
+            "inspection.local_defect.max_canonicalize_failure_ratio must be in [0, 1)"
+        )
+    if local.min_color_pixels_per_sample <= 0:
+        raise ProfileError("inspection.local_defect.min_color_pixels_per_sample must be > 0")
+    if local.color_delta_threshold <= 0:
+        raise ProfileError("inspection.local_defect.color_delta_threshold must be > 0")
+    if local.color_abnormal_ratio_threshold < 0:
+        raise ProfileError(
+            "inspection.local_defect.color_abnormal_ratio_threshold must be >= 0"
+        )
+    if local.color_abnormal_ratio_margin < 0:
+        raise ProfileError("inspection.local_defect.color_abnormal_ratio_margin must be >= 0")
+    if local.color_delta_p95_threshold < 0:
+        raise ProfileError("inspection.local_defect.color_delta_p95_threshold must be >= 0")
+    if local.dark_l_threshold < 0 or local.dark_l_threshold > 255:
+        raise ProfileError("inspection.local_defect.dark_l_threshold must be in [0, 255]")
+    if local.dark_pixel_ratio_threshold < 0:
+        raise ProfileError("inspection.local_defect.dark_pixel_ratio_threshold must be >= 0")
+    if local.dark_pixel_ratio_margin < 0:
+        raise ProfileError("inspection.local_defect.dark_pixel_ratio_margin must be >= 0")
+    if local.erode_mask_iterations < 0:
+        raise ProfileError("inspection.local_defect.erode_mask_iterations must be >= 0")
+    if local.morph_kernel_size < 1 or local.morph_kernel_size % 2 == 0:
+        raise ProfileError(
+            "inspection.local_defect.morph_kernel_size must be >= 1 and odd"
+        )
+    if not 0 <= local.min_alignment_iou <= 1:
+        raise ProfileError("inspection.local_defect.min_alignment_iou must be in [0, 1]")
 
     calibration = auto.calibration
     if calibration.min_valid_records <= 0:

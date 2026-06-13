@@ -43,9 +43,22 @@ def _build_summary(result, snapshot_keys: list[str]) -> dict:
         defects.append({
             "track_id": bar.track_id,
             "frame_id": bar.frame_id,
+            "result": bar.result,
+            "score": bar.score,
             "reasons": bar.reasons,
             "length": bar.measurements.get("length", 0.0),
             "width": bar.measurements.get("width", 0.0),
+            "left_shape_score": bar.measurements.get("left_shape_score", 0.0),
+            "middle_shape_score": bar.measurements.get("middle_shape_score", 0.0),
+            "right_shape_score": bar.measurements.get("right_shape_score", 0.0),
+            "max_shape_score": bar.measurements.get("max_shape_score", 0.0),
+            "shape_alignment_iou": bar.measurements.get("shape_alignment_iou", 0.0),
+            "color_delta_mean": bar.measurements.get("color_delta_mean", 0.0),
+            "color_delta_p95": bar.measurements.get("color_delta_p95", 0.0),
+            "color_abnormal_ratio": bar.measurements.get("color_abnormal_ratio", 0.0),
+            "dark_pixel_ratio": bar.measurements.get("dark_pixel_ratio", 0.0),
+            "local_analysis_success": bar.measurements.get("local_analysis_success", 0.0),
+            "local_canonicalize_failed": bar.measurements.get("local_canonicalize_failed", 0.0),
             "snapshot_key": snap_key,
         })
     return {

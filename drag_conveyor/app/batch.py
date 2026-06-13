@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from ..calibration import CalibrationEngine
-from ..config import CalibrationResult, Profile
+from ..config import AutoBaselineConfig, CalibrationResult, Profile
 from ..inference import OnnxRuntimeEngine, postprocess_segmentation, preprocess_roi
 from ..inspection_modes import (
     AVERAGE_RATIO_INSPECTION_MODE,
@@ -17,6 +17,7 @@ from ..inspection_modes import (
     AverageRatioThresholds,
     is_supported_inspection_mode,
 )
+from ..pipeline.local_defects import analyze_local_defects, build_local_defect_baseline
 from ..pipeline.measure import measure_contour
 from ..pipeline.rules import RuleEngine
 from ..pipeline.tracking import CentroidTracker
@@ -40,6 +41,8 @@ class CollectedBar:
     bbox_frame_xyxy: tuple[float, float, float, float]
     overlap_ratio: float
     contour_frame: np.ndarray
+    mask_roi: np.ndarray
+    roi_origin_xy: tuple[int, int]
     source_frame: np.ndarray
     latency_ms: float
 
@@ -209,6 +212,8 @@ def run_batch_inspection(
                         bbox_frame_xyxy=track.detection.bbox_frame_xyxy,
                         overlap_ratio=float(overlap),
                         contour_frame=track.detection.contour_frame,
+                        mask_roi=track.detection.mask_roi.copy(),
+                        roi_origin_xy=(roi_config.x, roi_config.y),
                         source_frame=frame.copy(),
                         latency_ms=latency_ms,
                     )
@@ -312,17 +317,44 @@ def _classify_with_auto_baseline(
         raise ValueError(outcome.reason)
 
     rule_engine = RuleEngine()
+    updated_profile = outcome.updated_profile
     calibration_result = outcome.calibration_result
-    calibrated_rules = outcome.updated_profile.inspection.auto_baseline
-    defect_policy = outcome.updated_profile.inspection.defect_policy
+    calibrated_rules = updated_profile.inspection.auto_baseline
+    defect_policy = updated_profile.inspection.defect_policy
+    local_config = updated_profile.inspection.local_defect
+    local_baseline = None
+    if local_config.enabled:
+        candidates = _select_geometry_normal_candidates(
+            collected=collected,
+            calibration_result=calibration_result,
+            rules=calibrated_rules,
+        )
+        local_baseline = build_local_defect_baseline(
+            bars=candidates,
+            config=local_config,
+        )
     bar_results: list[BarResult] = []
 
     for bar in collected:
+        measurements = dict(bar.measurements)
+        if local_config.enabled and local_baseline is not None:
+            local_features = analyze_local_defects(
+                frame=bar.source_frame,
+                contour_frame=bar.contour_frame,
+                mask_roi=bar.mask_roi,
+                roi_origin_xy=bar.roi_origin_xy,
+                baseline=local_baseline,
+                config=local_config,
+            )
+            measurements.update(local_features.to_dict())
+
         evaluation = rule_engine.evaluate(
-            measurements=bar.measurements,
+            measurements=measurements,
             rules=calibrated_rules,
             defect_policy=defect_policy,
             calibration_result=calibration_result,
+            local_defect_config=local_config if local_config.enabled else None,
+            local_defect_baseline=local_baseline,
         )
         bar_results.append(
             BarResult(
@@ -331,7 +363,7 @@ def _classify_with_auto_baseline(
                 result=evaluation.result,
                 score=evaluation.score,
                 reasons=list(evaluation.reasons),
-                measurements=dict(bar.measurements),
+                measurements=dict(evaluation.measurements),
                 thresholds=dict(evaluation.thresholds),
                 margins=dict(evaluation.margins),
                 bbox_frame_xyxy=bar.bbox_frame_xyxy,
@@ -393,6 +425,40 @@ def _classify_with_average_ratio(collected: list[CollectedBar], profile: Profile
         outlier_count=0,
         inlier_ratio=1.0,
     )
+
+
+def _feature_percentile(
+    calibration_result: CalibrationResult,
+    feature_name: str,
+    percentile_name: str,
+) -> float:
+    stats = calibration_result.features.get(feature_name)
+    if stats is None:
+        raise ValueError(f"Calibration feature stats missing feature: {feature_name}")
+    value = getattr(stats, percentile_name, None)
+    if value is None:
+        raise ValueError(
+            f"Calibration feature stats missing percentile: {feature_name}.{percentile_name}"
+        )
+    return float(value)
+
+
+def _select_geometry_normal_candidates(
+    *,
+    collected: list[CollectedBar],
+    calibration_result: CalibrationResult,
+    rules: AutoBaselineConfig,
+) -> list[CollectedBar]:
+    length_min = _feature_percentile(calibration_result, "length", rules.lower_percentile)
+    length_max = _feature_percentile(calibration_result, "length", rules.upper_percentile)
+    width_min = _feature_percentile(calibration_result, "width", rules.lower_percentile)
+    width_max = _feature_percentile(calibration_result, "width", rules.upper_percentile)
+    return [
+        bar
+        for bar in collected
+        if length_min <= float(bar.measurements["length"]) <= length_max
+        and width_min <= float(bar.measurements["width"]) <= width_max
+    ]
 
 
 def _write_defect_snapshots(defects: list[BarResult], snapshots_dir: Path) -> None:

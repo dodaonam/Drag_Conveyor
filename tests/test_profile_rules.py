@@ -5,14 +5,18 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
+
 from drag_conveyor.calibration import CalibrationEngine
 from drag_conveyor.config import (
     CalibrationResult,
     FeatureStats,
+    LocalDefectConfig,
     ProfileError,
     profile_from_dict,
     profile_to_dict,
 )
+from drag_conveyor.pipeline.local_defects import LocalDefectBaseline
 from drag_conveyor.pipeline.rules import RuleEngine
 from drag_conveyor.pipeline.trigger import build_trigger_band
 
@@ -68,6 +72,32 @@ def _calibration_result() -> CalibrationResult:
                 p98=23.0,
                 p99=24.0,
             ),
+        },
+    )
+
+
+def _local_defect_baseline(
+    *,
+    color_abnormal_ratio_p95: float = 0.05,
+    dark_ratio_p95: float = 0.04,
+) -> LocalDefectBaseline:
+    template_mask = np.ones((64, 256), dtype=np.uint8) * 255
+    return LocalDefectBaseline(
+        template_mask=template_mask,
+        template_prob=template_mask.astype(np.float32) / 255.0,
+        template_area_ratio=1.0,
+        lab_median=np.array([200.0, 128.0, 128.0], dtype=np.float32),
+        lab_mad=np.array([2.0, 2.0, 2.0], dtype=np.float32),
+        color_abnormal_ratio_p95=color_abnormal_ratio_p95,
+        dark_ratio_p95=dark_ratio_p95,
+        baseline_alignment_iou_p50=0.9,
+        baseline_alignment_iou_p10=0.8,
+        canonicalize_failure_ratio=0.0,
+        samples_used=40,
+        zone_slices={
+            "left": slice(0, 84),
+            "middle": slice(84, 169),
+            "right": slice(169, 256),
         },
     )
 
@@ -187,6 +217,65 @@ class ProfileRulesTests(unittest.TestCase):
         with self.assertRaisesRegex(ProfileError, "model.postprocess.target_class_ids must be a list"):
             profile_from_dict(raw_with_string_class_ids)
 
+    def test_profile_loads_local_defect_config_and_exports_class(self) -> None:
+        profile = _base_profile()
+
+        self.assertIsInstance(profile.inspection.local_defect, LocalDefectConfig)
+        self.assertTrue(profile.inspection.local_defect.enabled)
+        self.assertEqual(profile.inspection.local_defect.canonical_width, 256)
+
+    def test_profile_migrates_v1_0_0_to_v1_1_0_with_local_defect_disabled(self) -> None:
+        raw = _base_profile_dict()
+        raw["profile_version"] = "1.0.0"
+        raw["inspection"].pop("local_defect")
+
+        profile = profile_from_dict(raw)
+
+        self.assertEqual(profile.profile_version, "1.1.0")
+        self.assertFalse(profile.inspection.local_defect.enabled)
+
+    def test_profile_rejects_invalid_local_defect_config(self) -> None:
+        raw_with_unknown_local_key = _base_profile_dict()
+        raw_with_unknown_local_key["inspection"]["local_defect"]["unknown"] = True
+        with self.assertRaisesRegex(ProfileError, "Unsupported inspection.local_defect keys"):
+            profile_from_dict(raw_with_unknown_local_key)
+
+        raw_with_short_zone = _base_profile_dict()
+        raw_with_short_zone["inspection"]["local_defect"]["zone_left"] = [0.0]
+        with self.assertRaisesRegex(ProfileError, "inspection.local_defect.zone_left"):
+            profile_from_dict(raw_with_short_zone)
+
+        raw_with_string_zone = _base_profile_dict()
+        raw_with_string_zone["inspection"]["local_defect"]["zone_left"] = ["a", "b"]
+        with self.assertRaisesRegex(ProfileError, "inspection.local_defect.zone_left"):
+            profile_from_dict(raw_with_string_zone)
+
+        raw_with_bool_zone = _base_profile_dict()
+        raw_with_bool_zone["inspection"]["local_defect"]["zone_left"] = [False, 0.3]
+        with self.assertRaisesRegex(ProfileError, "inspection.local_defect.zone_left"):
+            profile_from_dict(raw_with_bool_zone)
+
+        raw_with_reversed_zone = _base_profile_dict()
+        raw_with_reversed_zone["inspection"]["local_defect"]["zone_left"] = [0.4, 0.3]
+        with self.assertRaisesRegex(ProfileError, "inspection.local_defect.zone_left"):
+            profile_from_dict(raw_with_reversed_zone)
+
+        raw_with_out_of_range_zone = _base_profile_dict()
+        raw_with_out_of_range_zone["inspection"]["local_defect"]["zone_left"] = [-0.1, 0.3]
+        with self.assertRaisesRegex(ProfileError, "inspection.local_defect.zone_left"):
+            profile_from_dict(raw_with_out_of_range_zone)
+
+        raw_with_even_kernel = _base_profile_dict()
+        raw_with_even_kernel["inspection"]["local_defect"]["morph_kernel_size"] = 4
+        with self.assertRaisesRegex(ProfileError, "inspection.local_defect.morph_kernel_size"):
+            profile_from_dict(raw_with_even_kernel)
+
+        raw_with_bad_template_area = _base_profile_dict()
+        raw_with_bad_template_area["inspection"]["local_defect"]["min_template_area_ratio"] = 0.5
+        raw_with_bad_template_area["inspection"]["local_defect"]["max_template_area_ratio"] = 0.5
+        with self.assertRaisesRegex(ProfileError, "min_template_area_ratio"):
+            profile_from_dict(raw_with_bad_template_area)
+
     def test_frontend_trigger_preview_matches_runtime_contract(self) -> None:
         html = (ROOT / "server" / "static" / "index.html").read_text(encoding="utf-8")
         raw = _base_profile_dict()
@@ -202,6 +291,7 @@ class ProfileRulesTests(unittest.TestCase):
         self.assertNotIn("inspection_region?.trigger_band", html)
         self.assertNotIn("sl-pos", html)
         self.assertNotIn("sl-thick", html)
+        self.assertIn("local_defect", raw["inspection"])
 
     def test_rule_engine_uses_length_width_auto_baseline_contract(self) -> None:
         engine = RuleEngine()
@@ -261,6 +351,259 @@ class ProfileRulesTests(unittest.TestCase):
                 policy,
                 calibration,
             )
+
+    def test_rule_engine_local_defect_marks_result_independently(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+        rules = profile.inspection.auto_baseline
+        policy = profile.inspection.defect_policy
+        local_config = profile.inspection.local_defect
+        calibration = _calibration_result()
+
+        evaluation = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "left_shape_score": 0.2,
+                "middle_shape_score": 0.0,
+                "right_shape_score": 0.0,
+                "left_defect_weighted_pixels": 40.0,
+                "middle_defect_weighted_pixels": 0.0,
+                "right_defect_weighted_pixels": 0.0,
+                "local_alignment_low": 0.0,
+            },
+            rules,
+            policy,
+            calibration,
+            local_defect_config=local_config,
+            local_defect_baseline=_local_defect_baseline(),
+        )
+
+        self.assertEqual(evaluation.result, "suspected_defect")
+        self.assertEqual(evaluation.reasons, ["deform_left"])
+
+    def test_rule_engine_supports_multi_label_local_reasons(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+        rules = profile.inspection.auto_baseline
+        policy = profile.inspection.defect_policy
+        local_config = profile.inspection.local_defect
+        calibration = _calibration_result()
+
+        evaluation = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "left_shape_score": 0.11,
+                "middle_shape_score": 0.2,
+                "right_shape_score": 0.11,
+                "left_defect_weighted_pixels": 40.0,
+                "middle_defect_weighted_pixels": 50.0,
+                "right_defect_weighted_pixels": 45.0,
+                "local_alignment_low": 0.0,
+                "color_abnormal_ratio": 0.3,
+                "color_delta_p95": 30.0,
+                "dark_pixel_ratio": 0.2,
+            },
+            rules,
+            policy,
+            calibration,
+            local_defect_config=local_config,
+            local_defect_baseline=_local_defect_baseline(
+                color_abnormal_ratio_p95=0.2,
+                dark_ratio_p95=0.1,
+            ),
+        )
+
+        self.assertCountEqual(
+            evaluation.reasons,
+            ["deform_both_sides", "deform_middle", "color_defect"],
+        )
+        self.assertEqual(evaluation.result, "suspected_defect")
+
+    def test_rule_engine_uses_low_alignment_severe_fallback(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+        rules = profile.inspection.auto_baseline
+        policy = profile.inspection.defect_policy
+        local_config = profile.inspection.local_defect
+        calibration = _calibration_result()
+
+        mild = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "left_shape_score": 0.2,
+                "middle_shape_score": 0.0,
+                "right_shape_score": 0.0,
+                "left_defect_weighted_pixels": 0.0,
+                "middle_defect_weighted_pixels": 0.0,
+                "right_defect_weighted_pixels": 0.0,
+                "local_alignment_low": 1.0,
+            },
+            rules,
+            policy,
+            calibration,
+            local_defect_config=local_config,
+            local_defect_baseline=_local_defect_baseline(),
+        )
+        severe = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "left_shape_score": 0.35,
+                "middle_shape_score": 0.0,
+                "right_shape_score": 0.0,
+                "left_defect_weighted_pixels": 0.0,
+                "middle_defect_weighted_pixels": 0.0,
+                "right_defect_weighted_pixels": 0.0,
+                "local_alignment_low": 1.0,
+            },
+            rules,
+            policy,
+            calibration,
+            local_defect_config=local_config,
+            local_defect_baseline=_local_defect_baseline(),
+        )
+
+        self.assertEqual(mild.reasons, [])
+        self.assertEqual(severe.reasons, ["deform_left"])
+
+    def test_rule_engine_uses_static_white_anchor_color_thresholds(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+        rules = profile.inspection.auto_baseline
+        policy = profile.inspection.defect_policy
+        local_config = profile.inspection.local_defect
+        calibration = _calibration_result()
+
+        below = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "color_abnormal_ratio": 0.14,
+                "color_delta_p95": 114.0,
+                "dark_pixel_ratio": 0.05,
+            },
+            rules,
+            policy,
+            calibration,
+            local_defect_config=local_config,
+            local_defect_baseline=_local_defect_baseline(),
+        )
+        above = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "color_abnormal_ratio": 0.16,
+                "color_delta_p95": 116.0,
+                "dark_pixel_ratio": 0.05,
+            },
+            rules,
+            policy,
+            calibration,
+            local_defect_config=local_config,
+            local_defect_baseline=_local_defect_baseline(),
+        )
+
+        self.assertEqual(below.reasons, [])
+        self.assertEqual(above.reasons, ["color_defect"])
+        self.assertAlmostEqual(
+            above.thresholds["color_abnormal_ratio_threshold"],
+            0.15,
+            places=6,
+        )
+        self.assertAlmostEqual(above.thresholds["dark_pixel_ratio_threshold"], 0.12, places=6)
+
+    def test_rule_engine_does_not_require_dynamic_color_baseline(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+        evaluation = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "color_abnormal_ratio": 0.16,
+                "color_delta_p95": 116.0,
+                "dark_pixel_ratio": 0.0,
+            },
+            profile.inspection.auto_baseline,
+            profile.inspection.defect_policy,
+            _calibration_result(),
+            local_defect_config=profile.inspection.local_defect,
+            local_defect_baseline=None,
+        )
+
+        self.assertEqual(evaluation.result, "suspected_defect")
+        self.assertEqual(evaluation.reasons, ["color_defect"])
+
+    def test_rule_engine_ignores_local_metrics_when_local_defect_disabled(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+        disabled_local = replace(profile.inspection.local_defect, enabled=False)
+
+        evaluation = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "left_shape_score": 0.5,
+                "left_defect_weighted_pixels": 99.0,
+                "local_alignment_low": 0.0,
+            },
+            profile.inspection.auto_baseline,
+            profile.inspection.defect_policy,
+            _calibration_result(),
+            local_defect_config=disabled_local,
+            local_defect_baseline=_local_defect_baseline(),
+        )
+
+        self.assertEqual(evaluation.result, "normal")
+        self.assertEqual(evaluation.reasons, [])
+
+    def test_rule_engine_does_not_inflate_score_for_non_triggered_local_metrics(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+
+        evaluation = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "middle_shape_score": 0.13,
+                "middle_defect_weighted_pixels": 50.0,
+                "local_alignment_low": 0.0,
+            },
+            profile.inspection.auto_baseline,
+            profile.inspection.defect_policy,
+            _calibration_result(),
+            local_defect_config=profile.inspection.local_defect,
+            local_defect_baseline=_local_defect_baseline(),
+        )
+
+        self.assertEqual(evaluation.result, "normal")
+        self.assertEqual(evaluation.reasons, [])
+        self.assertEqual(evaluation.score, 0.0)
+
+    def test_rule_engine_color_delta_p95_defect_contributes_to_score(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+
+        evaluation = engine.evaluate(
+            {
+                "length": 100.0,
+                "width": 20.0,
+                "color_abnormal_ratio": 0.0,
+                "color_delta_p95": 130.0,
+                "dark_pixel_ratio": 0.0,
+            },
+            profile.inspection.auto_baseline,
+            profile.inspection.defect_policy,
+            _calibration_result(),
+            local_defect_config=profile.inspection.local_defect,
+            local_defect_baseline=_local_defect_baseline(),
+        )
+
+        self.assertEqual(evaluation.result, "suspected_defect")
+        self.assertEqual(evaluation.reasons, ["color_defect"])
+        self.assertEqual(evaluation.score, 1.0)
 
     def test_calibration_updates_profile_without_mutating_rule_schema(self) -> None:
         profile = _base_profile()

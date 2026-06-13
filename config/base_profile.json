@@ -1,5 +1,5 @@
 {
-  "profile_version": "1.0.0",
+  "profile_version": "1.1.0",
   "model": {
     "path": "weights/best.onnx",
     "backend": "onnxruntime",
@@ -48,7 +48,7 @@
   "collection": {
     "trigger_band": {
       "position_ratio": 0.5,
-      "thickness_ratio": 0.2,
+      "thickness_ratio": 0.25,
       "min_overlap_ratio": 0.1,
       "pending_ttl_frames": 3,
       "allow_inside_band_trigger": true
@@ -87,6 +87,54 @@
       "width_max_ratio": 1.06,
       "length_min_ratio": 0.94,
       "length_max_ratio": 1.1
+    },
+    "local_defect": {
+      "enabled": true,
+      "canonical_width": 256,
+      "canonical_height": 64,
+      "min_bar_aspect_ratio": 2.0,
+      "min_endpoint_x_separation_ratio": 0.25,
+      "zone_left": [
+        0.0,
+        0.33
+      ],
+      "zone_middle": [
+        0.33,
+        0.66
+      ],
+      "zone_right": [
+        0.66,
+        1.0
+      ],
+      "shape_threshold": 0.12,
+      "middle_shape_threshold": 0.14,
+      "both_sides_threshold": 0.1,
+      "severe_shape_threshold": 0.3,
+      "missing_weight": 1.0,
+      "extra_weight": 0.6,
+      "min_zone_defect_weighted_pixels": 30.0,
+      "min_template_samples": 30,
+      "template_mask_threshold": 0.5,
+      "min_template_area_ratio": 0.1,
+      "max_template_area_ratio": 0.98,
+      "min_baseline_alignment_iou_p50": 0.65,
+      "min_baseline_alignment_iou_p10": 0.45,
+      "max_canonicalize_failure_ratio": 0.2,
+      "min_color_pixels_per_sample": 200,
+      "color_enabled": true,
+      "color_delta_threshold": 100.0,
+      "color_abnormal_ratio_threshold": 0.15,
+      "color_abnormal_ratio_margin": 0.0,
+      "color_delta_p95_threshold": 115.0,
+      "dark_pixel_enabled": true,
+      "dark_l_threshold": 60.0,
+      "dark_pixel_ratio_threshold": 0.12,
+      "dark_pixel_ratio_margin": 0.0,
+      "erode_mask_iterations": 1,
+      "morph_kernel_size": 3,
+      "min_alignment_iou": 0.35,
+      "orientation_flip_x": false,
+      "debug_save_canonical": false
     }
   }
 }

@@ -173,9 +173,60 @@ class ServerWorkerTests(unittest.TestCase):
             cfg = main.runtime_config()
 
             self.assertEqual(cfg["inspection"]["mode"], "auto_baseline")
+            self.assertNotIn("local_defect", cfg["inspection"])
             band = cfg["collection"]["trigger_band"]
             self.assertEqual(band["position_ratio"], 0.5)
             self.assertEqual(band["thickness_ratio"], 0.25)
+
+    def test_build_summary_includes_local_metrics_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, worker, _ = _load_server_modules(Path(tmp))
+
+            bar = mock.Mock(
+                result="suspected_defect",
+                track_id=7,
+                frame_id=11,
+                score=0.9,
+                reasons=["deform_left", "color_defect"],
+                measurements={
+                    "length": 100.0,
+                    "width": 20.0,
+                    "left_shape_score": 0.2,
+                    "middle_shape_score": 0.0,
+                    "right_shape_score": 0.0,
+                    "max_shape_score": 0.2,
+                    "shape_alignment_iou": 0.85,
+                    "color_delta_mean": 12.0,
+                    "color_delta_p95": 30.0,
+                    "color_abnormal_ratio": 0.22,
+                    "dark_pixel_ratio": 0.15,
+                    "local_analysis_success": 1.0,
+                    "local_canonicalize_failed": 0.0,
+                },
+            )
+            result = mock.Mock(
+                bars=[bar],
+                total_bars=1,
+                normal_bars=0,
+                defect_bars=1,
+                frames_scanned=10,
+                inlier_count=1,
+                outlier_count=0,
+                inlier_ratio=1.0,
+                failure_reason="",
+            )
+
+            summary = worker._build_summary(
+                result,
+                ["results/job-1/snapshots/track_000007_frame_000000011.jpg"],
+            )
+
+            defect = summary["defects"][0]
+            self.assertEqual(defect["result"], "suspected_defect")
+            self.assertEqual(defect["score"], 0.9)
+            self.assertEqual(defect["left_shape_score"], 0.2)
+            self.assertEqual(defect["color_abnormal_ratio"], 0.22)
+            self.assertEqual(defect["local_analysis_success"], 1.0)
 
     def test_uploaded_jobs_are_claimed_from_sqlite_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
