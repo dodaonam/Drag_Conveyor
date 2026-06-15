@@ -149,13 +149,13 @@ class ProfileRulesTests(unittest.TestCase):
             profile_from_dict(raw_with_legacy_rules)
 
         raw_with_bad_lower = json.loads(json.dumps(raw))
-        raw_with_bad_lower["inspection"]["auto_baseline"]["lower_percentile"] = "p10"
-        with self.assertRaisesRegex(ProfileError, "inspection.auto_baseline.lower_percentile"):
+        raw_with_bad_lower["inspection"]["auto_baseline"]["length_lower_percentile"] = "p10"
+        with self.assertRaisesRegex(ProfileError, "inspection.auto_baseline.length_lower_percentile"):
             profile_from_dict(raw_with_bad_lower)
 
         raw_with_bad_upper = json.loads(json.dumps(raw))
-        raw_with_bad_upper["inspection"]["auto_baseline"]["upper_percentile"] = "p90"
-        with self.assertRaisesRegex(ProfileError, "inspection.auto_baseline.upper_percentile"):
+        raw_with_bad_upper["inspection"]["auto_baseline"]["width_upper_percentile"] = "p90"
+        with self.assertRaisesRegex(ProfileError, "inspection.auto_baseline.width_upper_percentile"):
             profile_from_dict(raw_with_bad_upper)
 
         raw_with_dead_trigger_mode = json.loads(json.dumps(raw))
@@ -241,8 +241,10 @@ class ProfileRulesTests(unittest.TestCase):
         policy = profile.inspection.defect_policy
         rules = replace(
             profile.inspection.auto_baseline,
-            lower_percentile="p2",
-            upper_percentile="p98",
+            length_lower_percentile="p2",
+            length_upper_percentile="p98",
+            width_lower_percentile="p2",
+            width_upper_percentile="p98",
         )
 
         normal = engine.evaluate({"length": 92.0, "width": 18.0}, rules, policy, calibration)
@@ -257,7 +259,7 @@ class ProfileRulesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing percentile: p10"):
             engine.evaluate(
                 {"length": 100.0, "width": 20.0},
-                replace(rules, lower_percentile="p10"),
+                replace(rules, length_lower_percentile="p10"),
                 policy,
                 calibration,
             )
@@ -266,8 +268,10 @@ class ProfileRulesTests(unittest.TestCase):
         profile = _base_profile()
         auto = profile.inspection.auto_baseline
         auto.calibration.min_valid_records = 3
-        auto.lower_percentile = "p2"
-        auto.upper_percentile = "p98"
+        auto.length_lower_percentile = "p2"
+        auto.length_upper_percentile = "p98"
+        auto.width_lower_percentile = "p2"
+        auto.width_upper_percentile = "p98"
         records = [
             {"length": 100.0, "width": 20.0},
             {"length": 101.0, "width": 20.5},
@@ -280,11 +284,16 @@ class ProfileRulesTests(unittest.TestCase):
         self.assertIsNotNone(outcome.updated_profile)
         assert outcome.updated_profile is not None
         assert outcome.calibration_result is not None
-        self.assertEqual(outcome.calibration_result.thresholds_source, "auto_baseline_median_mad_p2_p98")
+        self.assertEqual(
+            outcome.calibration_result.thresholds_source,
+            "auto_baseline_median_mad_len_p2_p98_wid_p2_p98",
+        )
         self.assertIs(outcome.updated_profile.inspection.auto_baseline.calibration_result, outcome.calibration_result)
         auto_payload = profile_to_dict(outcome.updated_profile)["inspection"]["auto_baseline"]
-        self.assertEqual(auto_payload["lower_percentile"], "p2")
-        self.assertEqual(auto_payload["upper_percentile"], "p98")
+        self.assertEqual(auto_payload["length_lower_percentile"], "p2")
+        self.assertEqual(auto_payload["length_upper_percentile"], "p98")
+        self.assertEqual(auto_payload["width_lower_percentile"], "p2")
+        self.assertEqual(auto_payload["width_upper_percentile"], "p98")
         self.assertEqual(auto_payload["rules_version"], "geometry_v1")
         self.assertIn("calibration", auto_payload)
         self.assertIn("calibration_result", auto_payload)

@@ -75,6 +75,7 @@ class BatchInspectionResult:
     outlier_count: int
     inlier_ratio: float
     defect_snapshots_dir: Path | None
+    normal_snapshots_dir: Path | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +92,7 @@ def run_batch_inspection(
     profile: Profile,
     source: str,
     run_id: str | None = None,
-    defect_snapshots_root: Path | None = None,
+    snapshots_root: Path | None = None,
     inspection_mode: str | None = None,
 ) -> BatchInspectionResult:
     """Single-pass collect-all: infer full video, calibrate on all data, classify all bars."""
@@ -265,13 +266,19 @@ def run_batch_inspection(
     defect_bars = len(classified.bars) - normal_bars
     LOGGER.info("Classification: %d normal, %d defect", normal_bars, defect_bars)
 
-    # --- Phase 4: Ghi defect snapshot (seek-based, không buffer frame) ---
+    # --- Phase 4: Ghi snapshots (defects/ và normals/ trong cùng snapshots_root) ---
     defect_snapshots_dir: Path | None = None
-    if defect_snapshots_root is not None:
-        defects = [r for r in classified.bars if r.result == "suspected_defect"]
-        if defects:
-            defect_snapshots_dir = Path(defect_snapshots_root) / run_id
-            _write_defect_snapshots(defects, defect_snapshots_dir)
+    normal_snapshots_dir: Path | None = None
+    if snapshots_root is not None:
+        run_snapshots = Path(snapshots_root) / run_id
+        defects_list = [r for r in classified.bars if r.result == "suspected_defect"]
+        if defects_list:
+            defect_snapshots_dir = run_snapshots / "defects"
+            _write_defect_snapshots(defects_list, defect_snapshots_dir)
+        normals_list = [r for r in classified.bars if r.result == "normal"]
+        if normals_list:
+            normal_snapshots_dir = run_snapshots / "normals"
+            _write_normal_snapshots(normals_list, normal_snapshots_dir)
 
     return BatchInspectionResult(
         run_id=run_id,
@@ -287,6 +294,7 @@ def run_batch_inspection(
         outlier_count=classified.outlier_count,
         inlier_ratio=classified.inlier_ratio,
         defect_snapshots_dir=defect_snapshots_dir,
+        normal_snapshots_dir=normal_snapshots_dir,
     )
 
 
@@ -401,6 +409,29 @@ def _write_defect_snapshots(defects: list[BarResult], snapshots_dir: Path) -> No
         if defect.source_frame is None:
             continue
         _save_box_contour_snapshot(defect.source_frame, defect, snapshots_dir)
+
+
+def _write_normal_snapshots(normals: list[BarResult], snapshots_dir: Path) -> None:
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    for bar in normals:
+        if bar.source_frame is None:
+            continue
+        _save_contour_snapshot(bar.source_frame, bar, snapshots_dir)
+
+
+def _save_contour_snapshot(
+    frame: np.ndarray,
+    bar: BarResult,
+    snapshots_dir: Path,
+) -> None:
+    image = frame.copy()
+    contour = bar.contour_frame.astype(np.int32)
+    cv2.drawContours(image, [contour], -1, (0, 255, 0), 2)
+    output = snapshots_dir / f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
+    try:
+        cv2.imwrite(str(output), image)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Snapshot write failure for track_id=%s: %s", bar.track_id, exc)
 
 
 def _save_box_contour_snapshot(

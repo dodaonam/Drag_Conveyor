@@ -262,6 +262,10 @@ def get_result(job_id: str) -> dict[str, Any]:
         key = defect.get("snapshot_key")
         if key:
             defect["snapshot_url"] = r2.presigned_get_url(key, settings.PRESIGNED_GET_EXPIRES)
+    for normal in summary.get("normals", []):
+        key = normal.get("snapshot_key")
+        if key:
+            normal["snapshot_url"] = r2.presigned_get_url(key, settings.PRESIGNED_GET_EXPIRES)
 
     summary["job_id"] = job_id
     return summary

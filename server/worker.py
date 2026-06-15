@@ -33,17 +33,30 @@ def wake() -> None:
 
 # ── Summary builder ───────────────────────────────────────────────────────────
 
-def _build_summary(result, snapshot_keys: list[str]) -> dict:
+def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> dict:
     defects = []
     for bar in result.bars:
         if bar.result != "suspected_defect":
             continue
         snap_name = f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
-        snap_key = next((k for k in snapshot_keys if k.endswith(snap_name)), None)
+        snap_key = next((k for k in defect_keys if k.endswith(snap_name)), None)
         defects.append({
             "track_id": bar.track_id,
             "frame_id": bar.frame_id,
             "reasons": bar.reasons,
+            "length": bar.measurements.get("length", 0.0),
+            "width": bar.measurements.get("width", 0.0),
+            "snapshot_key": snap_key,
+        })
+    normals = []
+    for bar in result.bars:
+        if bar.result != "normal":
+            continue
+        snap_name = f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
+        snap_key = next((k for k in normal_keys if k.endswith(snap_name)), None)
+        normals.append({
+            "track_id": bar.track_id,
+            "frame_id": bar.frame_id,
             "length": bar.measurements.get("length", 0.0),
             "width": bar.measurements.get("width", 0.0),
             "snapshot_key": snap_key,
@@ -58,6 +71,7 @@ def _build_summary(result, snapshot_keys: list[str]) -> dict:
         "inlier_ratio": result.inlier_ratio,
         "failure_reason": result.failure_reason,
         "defects": defects,
+        "normals": normals,
     }
 
 
@@ -102,13 +116,12 @@ def _process_job(job_id: str) -> None:
         profile = profile.with_roi(roi_config)
 
         # 4. Run batch inspection
-        temp_snapshots = temp_job_dir / "snapshots"
         LOGGER.info("[%s] Starting inspection", job_id)
         result = run_batch_inspection(
             profile=profile,
             source=str(video_path),
             run_id=job_id,
-            defect_snapshots_root=temp_snapshots,
+            snapshots_root=temp_job_dir / "snapshots",
             inspection_mode=inspection_mode,
         )
         LOGGER.info(
@@ -117,16 +130,23 @@ def _process_job(job_id: str) -> None:
         )
 
         # 5. Upload results to R2 — MUST happen before any cleanup
-        snapshot_keys: list[str] = []
+        defect_keys: list[str] = []
         if result.defect_snapshots_dir and result.defect_snapshots_dir.exists():
             for img in sorted(result.defect_snapshots_dir.glob("*.jpg")):
-                key = f"results/{job_id}/snapshots/{img.name}"
+                key = f"results/{job_id}/snapshots/defects/{img.name}"
                 r2.upload_file(img, key, "image/jpeg")
-                snapshot_keys.append(key)
-            LOGGER.info("[%s] Snapshots uploaded: %d", job_id, len(snapshot_keys))
+                defect_keys.append(key)
+            LOGGER.info("[%s] Defect snapshots uploaded: %d", job_id, len(defect_keys))
+        normal_keys: list[str] = []
+        if result.normal_snapshots_dir and result.normal_snapshots_dir.exists():
+            for img in sorted(result.normal_snapshots_dir.glob("*.jpg")):
+                key = f"results/{job_id}/snapshots/normals/{img.name}"
+                r2.upload_file(img, key, "image/jpeg")
+                normal_keys.append(key)
+            LOGGER.info("[%s] Normal snapshots uploaded: %d", job_id, len(normal_keys))
 
         # 6. Save summary + mark completed (or failed if inspection itself failed)
-        summary = _build_summary(result, snapshot_keys)
+        summary = _build_summary(result, defect_keys, normal_keys)
         db.save_result(
             job_id=job_id,
             summary=summary,

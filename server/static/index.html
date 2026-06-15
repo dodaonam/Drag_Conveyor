@@ -118,6 +118,16 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
 .tag { background: #fef2f2; color: var(--red); font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 4px; }
 .defect-dims { font-size: 13px; color: var(--muted); }
 
+.tab-bar { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 14px; }
+.tab-btn {
+  flex: 1; padding: 10px 4px; font-size: 14px; font-weight: 600;
+  background: none; border: none; border-bottom: 3px solid transparent;
+  color: var(--muted); cursor: pointer; transition: color .15s, border-color .15s;
+  margin-bottom: -2px;
+}
+.tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+.tab-btn:not(.active):hover { color: var(--text); }
+
 .lightbox {
   position: fixed; inset: 0; z-index: 1000;
   background: rgba(15, 23, 42, .86);
@@ -180,6 +190,7 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
   .result-side { position: sticky; top: 28px; }
   .stat-grid { grid-template-columns: 1fr; }
   .defects { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .tab-btn { font-size: 15px; }
 }
 
 @media (min-width: 1200px) {
@@ -324,12 +335,22 @@ input:focus, select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgb
       </div>
 
       <div class="result-main">
-        <!-- Defect gallery -->
-        <div id="defect-section" style="display:none">
-          <div class="card" style="padding:12px 16px 8px">
-            <label class="lbl">Thanh bị lỗi</label>
+        <!-- Gallery tabs -->
+        <div id="gallery-tabs" style="display:none">
+          <div class="tab-bar">
+            <button class="tab-btn" id="tab-btn-defect" onclick="switchTab('defect')">
+              Thanh lỗi (<span id="tab-count-defect">0</span>)
+            </button>
+            <button class="tab-btn" id="tab-btn-normal" onclick="switchTab('normal')">
+              Bình thường (<span id="tab-count-normal">0</span>)
+            </button>
           </div>
-          <div class="defects" id="defect-list"></div>
+          <div id="panel-defect">
+            <div class="defects" id="defect-list"></div>
+          </div>
+          <div id="panel-normal" style="display:none">
+            <div class="defects" id="normal-list"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -365,6 +386,9 @@ const G = {
   lightboxOpen: false,
   lightboxItems: [],
   lightboxIndex: -1,
+  defectLightboxItems: [],
+  normalLightboxItems: [],
+  activeTab: 'defect',
   runtimeConfig: null,
 };
 
@@ -901,47 +925,74 @@ async function loadResult() {
     statBox(data.total_bars, 'Tổng thanh', '') +
     statBox(data.defect_bars, 'Thanh lỗi', data.defect_bars > 0 ? 'bad' : 'ok');
 
-  // Defects
   const defects = data.defects || [];
-  G.lightboxItems = defects
+  const normals = data.normals || [];
+
+  G.defectLightboxItems = defects
     .filter(d => d.snapshot_url)
     .map(d => ({
       src: d.snapshot_url,
       meta: `Track #${d.track_id} · Dài: ${(d.length || 0).toFixed(1)} · Rộng: ${(d.width || 0).toFixed(1)} · Lỗi: ${formatReasons(d.reasons)}`,
     }));
+  G.normalLightboxItems = normals
+    .filter(n => n.snapshot_url)
+    .map(n => ({
+      src: n.snapshot_url,
+      meta: `Track #${n.track_id} · Dài: ${(n.length || 0).toFixed(1)} · Rộng: ${(n.width || 0).toFixed(1)}`,
+    }));
   G.lightboxIndex = -1;
-  if (defects.length === 0) {
-    document.getElementById('no-defect').style.display    = 'block';
-    document.getElementById('defect-section').style.display = 'none';
-  } else {
-    document.getElementById('no-defect').style.display    = 'none';
-    document.getElementById('defect-section').style.display = 'block';
-    let snapshotIndex = 0;
-    document.getElementById('defect-list').innerHTML = defects.map(d => {
-      const currentIndex = d.snapshot_url ? snapshotIndex++ : -1;
-      return `
-        <div class="defect-card">
-          ${d.snapshot_url
-            ? `<img
-                 src="${esc(d.snapshot_url)}"
-                 loading="lazy"
-                 alt="Track ${esc(String(d.track_id))}"
-                 class="defect-preview"
-                 data-index="${currentIndex}">`
-            : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
-          <div class="defect-info">
-            <div class="defect-tags">
-              ${(d.reasons || []).map(r => `<span class="tag">${REASONS[r] || r}</span>`).join('')}
-            </div>
-            <div class="defect-dims">
-              Track #${d.track_id}
-              &nbsp;·&nbsp; Dài: ${(d.length || 0).toFixed(1)}
-              &nbsp;·&nbsp; Rộng: ${(d.width || 0).toFixed(1)}
-            </div>
-          </div>
-        </div>`;
-    }).join('');
-  }
+
+  // No-defect banner
+  document.getElementById('no-defect').style.display = defects.length === 0 ? 'block' : 'none';
+
+  // Tab section
+  const hasAny = defects.length > 0 || normals.length > 0;
+  document.getElementById('gallery-tabs').style.display = hasAny ? '' : 'none';
+  document.getElementById('tab-count-defect').textContent = defects.length;
+  document.getElementById('tab-count-normal').textContent = normals.length;
+
+  // Render defect list
+  let di = 0;
+  document.getElementById('defect-list').innerHTML = defects.map(d => {
+    const idx = d.snapshot_url ? di++ : -1;
+    return `
+      <div class="defect-card">
+        ${d.snapshot_url
+          ? `<img src="${esc(d.snapshot_url)}" loading="lazy" alt="Track ${esc(String(d.track_id))}" class="defect-preview" data-index="${idx}">`
+          : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
+        <div class="defect-info">
+          <div class="defect-tags">${(d.reasons || []).map(r => `<span class="tag">${REASONS[r] || r}</span>`).join('')}</div>
+          <div class="defect-dims">Track #${d.track_id} &nbsp;·&nbsp; Dài: ${(d.length || 0).toFixed(1)} &nbsp;·&nbsp; Rộng: ${(d.width || 0).toFixed(1)}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  // Render normal list
+  let ni = 0;
+  document.getElementById('normal-list').innerHTML = normals.map(n => {
+    const idx = n.snapshot_url ? ni++ : -1;
+    return `
+      <div class="defect-card">
+        ${n.snapshot_url
+          ? `<img src="${esc(n.snapshot_url)}" loading="lazy" alt="Track ${esc(String(n.track_id))}" class="normal-preview" data-index="${idx}">`
+          : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
+        <div class="defect-info">
+          <div class="defect-dims">Track #${n.track_id} &nbsp;·&nbsp; Dài: ${(n.length || 0).toFixed(1)} &nbsp;·&nbsp; Rộng: ${(n.width || 0).toFixed(1)}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  switchTab(defects.length > 0 ? 'defect' : 'normal');
+}
+
+function switchTab(tab) {
+  G.activeTab = tab;
+  document.getElementById('tab-btn-defect').classList.toggle('active', tab === 'defect');
+  document.getElementById('tab-btn-normal').classList.toggle('active', tab === 'normal');
+  document.getElementById('panel-defect').style.display = tab === 'defect' ? '' : 'none';
+  document.getElementById('panel-normal').style.display = tab === 'normal' ? '' : 'none';
+  G.lightboxItems = tab === 'defect' ? G.defectLightboxItems : G.normalLightboxItems;
+  G.lightboxIndex = -1;
 }
 
 function statBox(n, lbl, cls) {
@@ -1011,6 +1062,12 @@ function closeLightbox() {
 
 document.getElementById('defect-list').addEventListener('click', e => {
   const img = e.target.closest('.defect-preview');
+  if (!img) return;
+  openLightbox(Number(img.dataset.index));
+});
+
+document.getElementById('normal-list').addEventListener('click', e => {
+  const img = e.target.closest('.normal-preview');
   if (!img) return;
   openLightbox(Number(img.dataset.index));
 });

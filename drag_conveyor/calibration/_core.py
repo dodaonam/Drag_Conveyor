@@ -97,7 +97,7 @@ class CalibrationEngine:
             outlier_count=outlier_count,
             inlier_ratio=inlier_ratio,
             thresholds_source=(
-                f"auto_baseline_median_mad_{auto.lower_percentile}_{auto.upper_percentile}"
+                f"auto_baseline_median_mad_len_{auto.length_lower_percentile}_{auto.length_upper_percentile}_wid_{auto.width_lower_percentile}_{auto.width_upper_percentile}"
             ),
             features=feature_stats,
         )

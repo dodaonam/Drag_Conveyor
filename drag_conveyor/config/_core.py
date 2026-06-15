@@ -54,6 +54,7 @@ class ModelConfig:
     preprocess: PreprocessConfig
     output_format: OutputFormatConfig
     postprocess: PostprocessConfig
+    model_zoo: dict[str, str] | None = None
 
 
 @dataclass(slots=True)
@@ -148,8 +149,10 @@ class CalibrationResult:
 
 @dataclass(slots=True)
 class AutoBaselineConfig:
-    lower_percentile: str
-    upper_percentile: str
+    length_lower_percentile: str
+    length_upper_percentile: str
+    width_lower_percentile: str
+    width_upper_percentile: str
     rules_version: str
     calibration: CalibrationConfig
     calibration_result: CalibrationResult | None = None
@@ -199,6 +202,20 @@ class Profile:
         roi.y = int(roi_config["y"])
         roi.w = int(roi_config["w"])
         roi.h = int(roi_config["h"])
+
+        if cloned.model.model_zoo:
+            long_side = max(roi.w, roi.h)
+            if long_side < 320:
+                target_size = 320
+            elif long_side < 416:
+                target_size = 416
+            else:
+                target_size = 640
+            path = cloned.model.model_zoo.get(str(target_size))
+            if path:
+                cloned.model.path = path
+                cloned.model.input_size = target_size
+
         validate_profile(cloned)
         return cloned
 
@@ -353,6 +370,25 @@ def _reject_unknown_keys(data: dict[str, Any], allowed: set[str], label: str) ->
         raise ProfileError(f"Unsupported {label} keys: {', '.join(sorted(unknown))}")
 
 
+def _parse_model_zoo(raw: Any) -> dict[str, str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ProfileError("model.model_zoo must be an object mapping size to path")
+    result: dict[str, str] = {}
+    for key, val in raw.items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            raise ProfileError("model.model_zoo keys and values must be strings")
+        try:
+            size = int(key)
+        except ValueError as exc:
+            raise ProfileError(f"model.model_zoo key must be an integer string, got: {key!r}") from exc
+        if size <= 0:
+            raise ProfileError(f"model.model_zoo key must be positive, got: {key!r}")
+        result[key] = val
+    return result or None
+
+
 def migrate_profile_dict(raw: dict[str, Any]) -> dict[str, Any]:
     version = raw.get("profile_version")
     if not isinstance(version, str):
@@ -411,7 +447,7 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
 
     _reject_unknown_keys(
         model_raw,
-        {"path", "backend", "providers", "task", "input_size", "preprocess", "output_format", "postprocess"},
+        {"path", "backend", "providers", "task", "input_size", "preprocess", "output_format", "postprocess", "model_zoo"},
         "model",
     )
     _reject_unknown_keys(
@@ -475,7 +511,15 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
     )
     _reject_unknown_keys(
         auto_raw,
-        {"lower_percentile", "upper_percentile", "rules_version", "calibration", "calibration_result"},
+        {
+            "length_lower_percentile",
+            "length_upper_percentile",
+            "width_lower_percentile",
+            "width_upper_percentile",
+            "rules_version",
+            "calibration",
+            "calibration_result",
+        },
         "inspection.auto_baseline",
     )
     _reject_unknown_keys(
@@ -511,6 +555,7 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                 providers=_required_str_list(model_raw, "providers", "model.providers"),
                 task=_required_str(model_raw, "task", "model.task"),
                 input_size=_required_int(model_raw, "input_size", "model.input_size"),
+                model_zoo=_parse_model_zoo(model_raw.get("model_zoo")),
                 preprocess=PreprocessConfig(
                     type=_required_str(preprocess_raw, "type", "model.preprocess.type"),
                     normalize=_required_bool(preprocess_raw, "normalize", "model.preprocess.normalize"),
@@ -673,15 +718,25 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                     ),
                 ),
                 auto_baseline=AutoBaselineConfig(
-                    lower_percentile=_required_str(
+                    length_lower_percentile=_required_str(
                         auto_raw,
-                        "lower_percentile",
-                        "inspection.auto_baseline.lower_percentile",
+                        "length_lower_percentile",
+                        "inspection.auto_baseline.length_lower_percentile",
                     ),
-                    upper_percentile=_required_str(
+                    length_upper_percentile=_required_str(
                         auto_raw,
-                        "upper_percentile",
-                        "inspection.auto_baseline.upper_percentile",
+                        "length_upper_percentile",
+                        "inspection.auto_baseline.length_upper_percentile",
+                    ),
+                    width_lower_percentile=_required_str(
+                        auto_raw,
+                        "width_lower_percentile",
+                        "inspection.auto_baseline.width_lower_percentile",
+                    ),
+                    width_upper_percentile=_required_str(
+                        auto_raw,
+                        "width_upper_percentile",
+                        "inspection.auto_baseline.width_upper_percentile",
                     ),
                     rules_version=_required_str(
                         auto_raw,
@@ -843,12 +898,20 @@ def validate_profile(profile: Profile) -> None:
         )
 
     auto = inspection.auto_baseline
-    if auto.lower_percentile not in LOWER_RULE_PERCENTILES:
-        allowed = ", ".join(LOWER_RULE_PERCENTILES)
-        raise ProfileError(f"inspection.auto_baseline.lower_percentile must be one of: {allowed}")
-    if auto.upper_percentile not in UPPER_RULE_PERCENTILES:
-        allowed = ", ".join(UPPER_RULE_PERCENTILES)
-        raise ProfileError(f"inspection.auto_baseline.upper_percentile must be one of: {allowed}")
+    for field, value in (
+        ("length_lower_percentile", auto.length_lower_percentile),
+        ("width_lower_percentile", auto.width_lower_percentile),
+    ):
+        if value not in LOWER_RULE_PERCENTILES:
+            allowed = ", ".join(LOWER_RULE_PERCENTILES)
+            raise ProfileError(f"inspection.auto_baseline.{field} must be one of: {allowed}")
+    for field, value in (
+        ("length_upper_percentile", auto.length_upper_percentile),
+        ("width_upper_percentile", auto.width_upper_percentile),
+    ):
+        if value not in UPPER_RULE_PERCENTILES:
+            allowed = ", ".join(UPPER_RULE_PERCENTILES)
+            raise ProfileError(f"inspection.auto_baseline.{field} must be one of: {allowed}")
     if not auto.rules_version.strip():
         raise ProfileError("inspection.auto_baseline.rules_version must not be empty")
 
