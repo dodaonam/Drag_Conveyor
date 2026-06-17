@@ -73,11 +73,15 @@
       "score_dimension_count": 2
     },
     "auto_baseline": {
+      "rules_version": "geometry_v1",
       "length_lower_percentile": "p2",
       "length_upper_percentile": "p99",
       "width_lower_percentile": "p1",
       "width_upper_percentile": "p98",
-      "rules_version": "geometry_v1",
+      "length_lower_margin": 0.0,
+      "length_upper_margin": 0.05,
+      "width_lower_margin": 0.05,
+      "width_upper_margin": 0.0,
       "calibration": {
         "min_valid_records": 45,
         "min_inlier_ratio": 0.7,

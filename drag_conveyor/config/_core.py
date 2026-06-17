@@ -156,6 +156,10 @@ class AutoBaselineConfig:
     rules_version: str
     calibration: CalibrationConfig
     calibration_result: CalibrationResult | None = None
+    length_lower_margin: float = 0.0
+    length_upper_margin: float = 0.0
+    width_lower_margin: float = 0.0
+    width_upper_margin: float = 0.0
 
 
 @dataclass(slots=True)
@@ -537,6 +541,10 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
             "rules_version",
             "calibration",
             "calibration_result",
+            "length_lower_margin",
+            "length_upper_margin",
+            "width_lower_margin",
+            "width_upper_margin",
         },
         "inspection.auto_baseline",
     )
@@ -791,6 +799,10 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                         ),
                     ),
                     calibration_result=calibration_result,
+                    length_lower_margin=float(auto_raw.get("length_lower_margin", 0.0)),
+                    length_upper_margin=float(auto_raw.get("length_upper_margin", 0.0)),
+                    width_lower_margin=float(auto_raw.get("width_lower_margin", 0.0)),
+                    width_upper_margin=float(auto_raw.get("width_upper_margin", 0.0)),
                 ),
                 average_ratio=AverageRatioConfig(
                     width_min_ratio=_required_float(
@@ -933,6 +945,14 @@ def validate_profile(profile: Profile) -> None:
             raise ProfileError(f"inspection.auto_baseline.{field} must be one of: {allowed}")
     if not auto.rules_version.strip():
         raise ProfileError("inspection.auto_baseline.rules_version must not be empty")
+    for margin_field, margin_val in (
+        ("length_lower_margin", auto.length_lower_margin),
+        ("length_upper_margin", auto.length_upper_margin),
+        ("width_lower_margin", auto.width_lower_margin),
+        ("width_upper_margin", auto.width_upper_margin),
+    ):
+        if not 0.0 <= margin_val < 1.0:
+            raise ProfileError(f"inspection.auto_baseline.{margin_field} must be in [0, 1)")
 
     average_ratio = inspection.average_ratio
     ratio_fields = {

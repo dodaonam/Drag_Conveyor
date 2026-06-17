@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
+import re
+import unicodedata
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+_TZ_ICT = timezone(timedelta(hours=7))
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +69,14 @@ _STATUS_MESSAGES = {
 }
 
 
+def _normalize_name(name: str) -> str:
+    s = name.strip().lower().replace('đ', 'd')
+    s = unicodedata.normalize('NFD', s)
+    s = ''.join(c for c in s if unicodedata.category(c) != 'Mn')
+    s = re.sub(r'[^a-z0-9]', '', s)
+    return s or 'x'
+
+
 def _load_base_profile() -> Profile:
     try:
         return load_profile(settings.BASE_PROFILE_PATH)
@@ -111,6 +122,8 @@ class CreateJobIn(BaseModel):
     content_type: str
     size_bytes: int
     roi: RoiIn
+    inspector_name: str
+    conveyor_name: str
     inspection_mode: str | None = None
 
     @field_validator("inspection_mode")
@@ -188,7 +201,13 @@ def create_job(body: CreateJobIn) -> CreateJobOut:
         )
     roi = body.roi
 
-    job_id = uuid.uuid4().hex
+    now_dt = datetime.now(_TZ_ICT)
+    job_id = "{}_{}_{}_{}".format(
+        now_dt.strftime('%d%m%Y'),
+        _normalize_name(body.inspector_name),
+        _normalize_name(body.conveyor_name),
+        now_dt.strftime('%H%M%S'),
+    )
     ext = _EXT_MAP[body.content_type]
     object_key = f"uploads/{job_id}/input.{ext}"
     now = _now()

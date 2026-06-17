@@ -118,6 +118,8 @@ class ServerWorkerTests(unittest.TestCase):
                         "frame_width": 320,
                         "frame_height": 240,
                     },
+                    "inspector_name": "Nguyễn Văn A",
+                    "conveyor_name": "Băng tải 1",
                 }
             )
 
@@ -146,6 +148,8 @@ class ServerWorkerTests(unittest.TestCase):
                     "frame_width": 320,
                     "frame_height": 240,
                 },
+                "inspector_name": "nguyen",
+                "conveyor_name": "line1",
             }
 
             default_body = main.CreateJobIn.model_validate(base_payload)

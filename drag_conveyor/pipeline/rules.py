@@ -29,10 +29,10 @@ class RuleEngine:
         length = float(measurements["length"])
         width = float(measurements["width"])
 
-        length_min = _percentile(calibration_result.features["length"], rules.length_lower_percentile)
-        length_max = _percentile(calibration_result.features["length"], rules.length_upper_percentile)
-        width_min = _percentile(calibration_result.features["width"], rules.width_lower_percentile)
-        width_max = _percentile(calibration_result.features["width"], rules.width_upper_percentile)
+        length_min = _percentile(calibration_result.features["length"], rules.length_lower_percentile) * (1.0 - rules.length_lower_margin)
+        length_max = _percentile(calibration_result.features["length"], rules.length_upper_percentile) * (1.0 + rules.length_upper_margin)
+        width_min = _percentile(calibration_result.features["width"], rules.width_lower_percentile) * (1.0 - rules.width_lower_margin)
+        width_max = _percentile(calibration_result.features["width"], rules.width_upper_percentile) * (1.0 + rules.width_upper_margin)
 
         thresholds: dict[str, float] = {
             "length_min": float(length_min),
