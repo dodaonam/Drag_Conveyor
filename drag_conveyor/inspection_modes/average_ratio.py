@@ -31,8 +31,6 @@ class AverageRatioDecision:
     reasons: list[str]
     thresholds: dict[str, float]
     margins: dict[str, float]
-    average_length: float
-    average_width: float
 
 
 class AverageRatioInspector:
@@ -101,8 +99,6 @@ class AverageRatioInspector:
                 "length_margin": min(length - length_min, length_max - length),
                 "width_margin": min(width - width_min, width_max - width),
             },
-            average_length=average_length,
-            average_width=average_width,
         )
 
     def compute_averages(self, measurements: list[dict[str, float]]) -> dict[str, float]:

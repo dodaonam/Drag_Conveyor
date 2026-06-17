@@ -13,11 +13,8 @@ class DefectReason(BaseModel):
     )
 
 
-def make_openai_llm(api_key: str, model: str, num_bars: int = 1, reasoning_effort: str = "medium") -> ChatOpenAI:
-    # Output: ~80 tokens per bar + 200 overhead
-    # Reasoning: add 1500 tokens buffer for internal reasoning tokens
+def make_openai_llm(api_key: str, model: str, num_bars: int = 1) -> ChatOpenAI:
     output_tokens = max(400, num_bars * 80 + 200)
-    # max_tokens = output_tokens + 2000
     return ChatOpenAI(  # type: ignore[call-arg]
         model=model,
         temperature=0.3,

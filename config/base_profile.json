@@ -64,6 +64,10 @@
       "min_hits": 2,
       "max_reverse_px": 5.0,
       "max_area_ratio_change": 3.0
+    },
+    "detection_filter": {
+      "min_aspect_ratio": 3.0,
+      "area_divisor": 50.0
     }
   },
   "inspection": {

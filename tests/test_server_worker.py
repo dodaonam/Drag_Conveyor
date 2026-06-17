@@ -179,7 +179,7 @@ class ServerWorkerTests(unittest.TestCase):
             self.assertEqual(cfg["inspection"]["mode"], "auto_baseline")
             band = cfg["collection"]["trigger_band"]
             self.assertEqual(band["position_ratio"], 0.5)
-            self.assertEqual(band["thickness_ratio"], 0.25)
+            self.assertEqual(band["thickness_ratio"], 0.2)
 
     def test_uploaded_jobs_are_claimed_from_sqlite_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

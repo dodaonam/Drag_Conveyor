@@ -6,10 +6,9 @@ from datetime import datetime
 
 import numpy as np
 
-from ..config import CalibrationResult, FeatureStats, Profile
+from ..config import CalibrationResult, FeatureStats, Profile, REQUIRED_CALIBRATION_FEATURES
 
-CRITICAL_FEATURES = ["length", "width"]
-ALL_FEATURES = ["length", "width"]
+FEATURES = sorted(REQUIRED_CALIBRATION_FEATURES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,95 +19,94 @@ class CalibrationOutcome:
     updated_profile: Profile | None
 
 
-class CalibrationEngine:
-    def calibrate(self, records: list[dict[str, float]], profile: Profile) -> CalibrationOutcome:
-        auto = profile.inspection.auto_baseline
-        cfg = auto.calibration
-        valid = [r for r in records if _record_has_all_features(r)]
+def calibrate(records: list[dict[str, float]], profile: Profile) -> CalibrationOutcome:
+    auto = profile.inspection.auto_baseline
+    cfg = auto.calibration
+    valid = [r for r in records if _record_has_all_features(r)]
 
-        if len(valid) < cfg.min_valid_records:
-            return CalibrationOutcome(
-                success=False,
-                reason=(
-                    f"valid_records={len(valid)} below min_valid_records={cfg.min_valid_records}; "
-                    "baseline not stable"
-                ),
-                calibration_result=None,
-                updated_profile=None,
-            )
-
-        outlier_mask = _compute_outlier_mask(
-            valid,
-            modified_z_score_threshold=cfg.outlier.modified_z_score_threshold,
-            iqr_multiplier=cfg.outlier.iqr_multiplier,
-        )
-        outliers = [r for r, is_out in zip(valid, outlier_mask) if is_out]
-        inliers = [r for r, is_out in zip(valid, outlier_mask) if not is_out]
-
-        valid_records = len(valid)
-        inlier_count = len(inliers)
-        outlier_count = len(outliers)
-        inlier_ratio = inlier_count / valid_records if valid_records else 0.0
-        outlier_ratio = outlier_count / valid_records if valid_records else 1.0
-
-        if inlier_count < cfg.min_valid_records:
-            return CalibrationOutcome(
-                success=False,
-                reason=(
-                    f"inlier_count={inlier_count} below min_valid_records={cfg.min_valid_records}; "
-                    "baseline not stable"
-                ),
-                calibration_result=None,
-                updated_profile=None,
-            )
-
-        if inlier_ratio < cfg.min_inlier_ratio:
-            return CalibrationOutcome(
-                success=False,
-                reason=(
-                    f"inlier_ratio={inlier_ratio:.3f} below min_inlier_ratio={cfg.min_inlier_ratio:.3f}; "
-                    "baseline not stable"
-                ),
-                calibration_result=None,
-                updated_profile=None,
-            )
-
-        if outlier_ratio > cfg.max_outlier_ratio:
-            return CalibrationOutcome(
-                success=False,
-                reason=(
-                    f"outlier_ratio={outlier_ratio:.3f} above max_outlier_ratio={cfg.max_outlier_ratio:.3f}; "
-                    "baseline not stable"
-                ),
-                calibration_result=None,
-                updated_profile=None,
-            )
-
-        feature_stats = {name: _feature_stats([row[name] for row in inliers]) for name in ALL_FEATURES}
-
-        now = datetime.now().isoformat(timespec="seconds")
-        result = CalibrationResult(
-            created_at=now,
-            rules_updated_at=now,
-            rules_version=auto.rules_version,
-            sample_count=len(records),
-            valid_records=valid_records,
-            inlier_count=inlier_count,
-            outlier_count=outlier_count,
-            inlier_ratio=inlier_ratio,
-            thresholds_source=(
-                f"auto_baseline_median_mad_len_{auto.length_lower_percentile}_{auto.length_upper_percentile}_wid_{auto.width_lower_percentile}_{auto.width_upper_percentile}"
+    if len(valid) < cfg.min_valid_records:
+        return CalibrationOutcome(
+            success=False,
+            reason=(
+                f"valid_records={len(valid)} below min_valid_records={cfg.min_valid_records}; "
+                "baseline not stable"
             ),
-            features=feature_stats,
+            calibration_result=None,
+            updated_profile=None,
         )
 
-        updated = _apply_calibration_to_profile(profile, result)
-        return CalibrationOutcome(success=True, reason="ok", calibration_result=result, updated_profile=updated)
+    outlier_mask = _compute_outlier_mask(
+        valid,
+        modified_z_score_threshold=cfg.outlier.modified_z_score_threshold,
+        iqr_multiplier=cfg.outlier.iqr_multiplier,
+    )
+    outliers = [r for r, is_out in zip(valid, outlier_mask) if is_out]
+    inliers = [r for r, is_out in zip(valid, outlier_mask) if not is_out]
+
+    valid_records = len(valid)
+    inlier_count = len(inliers)
+    outlier_count = len(outliers)
+    inlier_ratio = inlier_count / valid_records if valid_records else 0.0
+    outlier_ratio = outlier_count / valid_records if valid_records else 1.0
+
+    if inlier_count < cfg.min_valid_records:
+        return CalibrationOutcome(
+            success=False,
+            reason=(
+                f"inlier_count={inlier_count} below min_valid_records={cfg.min_valid_records}; "
+                "baseline not stable"
+            ),
+            calibration_result=None,
+            updated_profile=None,
+        )
+
+    if inlier_ratio < cfg.min_inlier_ratio:
+        return CalibrationOutcome(
+            success=False,
+            reason=(
+                f"inlier_ratio={inlier_ratio:.3f} below min_inlier_ratio={cfg.min_inlier_ratio:.3f}; "
+                "baseline not stable"
+            ),
+            calibration_result=None,
+            updated_profile=None,
+        )
+
+    if outlier_ratio > cfg.max_outlier_ratio:
+        return CalibrationOutcome(
+            success=False,
+            reason=(
+                f"outlier_ratio={outlier_ratio:.3f} above max_outlier_ratio={cfg.max_outlier_ratio:.3f}; "
+                "baseline not stable"
+            ),
+            calibration_result=None,
+            updated_profile=None,
+        )
+
+    feature_stats = {name: _feature_stats([row[name] for row in inliers]) for name in FEATURES}
+
+    now = datetime.now().isoformat(timespec="seconds")
+    result = CalibrationResult(
+        created_at=now,
+        rules_updated_at=now,
+        rules_version=auto.rules_version,
+        sample_count=len(records),
+        valid_records=valid_records,
+        inlier_count=inlier_count,
+        outlier_count=outlier_count,
+        inlier_ratio=inlier_ratio,
+        thresholds_source=(
+            f"auto_baseline_median_mad_len_{auto.length_lower_percentile}_{auto.length_upper_percentile}_wid_{auto.width_lower_percentile}_{auto.width_upper_percentile}"
+        ),
+        features=feature_stats,
+    )
+
+    updated = _apply_calibration_to_profile(profile, result)
+    return CalibrationOutcome(success=True, reason="ok", calibration_result=result, updated_profile=updated)
 
 
 def _record_has_all_features(record: dict[str, float]) -> bool:
     try:
-        for name in ALL_FEATURES:
+        for name in FEATURES:
             val = float(record[name])
             if not np.isfinite(val):
                 return False
@@ -125,7 +123,7 @@ def _compute_outlier_mask(
 ) -> list[bool]:
     mask = [False] * len(records)
 
-    for name in CRITICAL_FEATURES:
+    for name in FEATURES:
         values = np.array([float(r[name]) for r in records], dtype=np.float64)
         median = float(np.median(values))
         mad = float(np.median(np.abs(values - median)))

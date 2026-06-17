@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from ._core import (
     PROFILE_VERSION,
+    REQUIRED_CALIBRATION_FEATURES,
     AverageRatioConfig,
+    DetectionFilterConfig,
     AutoBaselineConfig,
     CalibrationConfig,
     CalibrationOutlierConfig,
@@ -32,6 +34,7 @@ from ._core import (
 
 __all__ = [
     "PROFILE_VERSION",
+    "REQUIRED_CALIBRATION_FEATURES",
     "ProfileError",
     "InspectionConfig",
     "DefectPolicyConfig",
@@ -44,6 +47,7 @@ __all__ = [
     "RegionConfig",
     "RoiConfig",
     "CollectionConfig",
+    "DetectionFilterConfig",
     "TrackerConfig",
     "AverageRatioConfig",
     "CalibrationOutlierConfig",

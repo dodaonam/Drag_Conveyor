@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ..calibration import CalibrationEngine
+from ..calibration import calibrate as calibrate_records
 from ..config import CalibrationResult, Profile
 from ..inference import OnnxRuntimeEngine, postprocess_segmentation, preprocess_roi
 from ..inspection_modes import (
@@ -143,7 +143,7 @@ def run_batch_inspection(
     frame_count = 0
 
     # --- Phase 1: Thu thập toàn bộ thanh từ video ---
-    cap, _ = open_video_source(source)
+    cap = open_video_source(source)
     try:
         while True:
             t0 = time.perf_counter()
@@ -235,11 +235,12 @@ def run_batch_inspection(
     LOGGER.info("Collected %d bars from %d frames", len(collected), frame_count)
 
     # Filter out false detections (e.g. chain links misdetected as bars).
+    detection_filter = profile.collection.detection_filter
     if collected:
-        # 1. Area filter: drop if area < max_area / 150
+        # 1. Area filter: drop if area < max_area / area_divisor
         areas = [b.measurements["length"] * b.measurements["width"] for b in collected]
         max_area = max(areas)
-        area_threshold = max_area / 50.0
+        area_threshold = max_area / detection_filter.area_divisor
         before = len(collected)
         collected = [b for b, a in zip(collected, areas) if a >= area_threshold]
         dropped = before - len(collected)
@@ -249,18 +250,19 @@ def run_batch_inspection(
                 dropped, area_threshold, max_area,
             )
 
-        # 2. Aspect ratio filter: drop if length/width < 2.75 (chain links are near-square)
+        # 2. Aspect ratio filter: drop if length/width < min_aspect_ratio (chain links are near-square)
+        min_ar = detection_filter.min_aspect_ratio
         before = len(collected)
         collected = [
             b for b in collected
             if b.measurements["width"] > 0
-            and b.measurements["length"] / b.measurements["width"] >= 3
+            and b.measurements["length"] / b.measurements["width"] >= min_ar
         ]
         dropped = before - len(collected)
         if dropped:
             LOGGER.info(
-                "Dropped %d low-aspect-ratio false-detection(s) (length/width < 2.75)",
-                dropped,
+                "Dropped %d low-aspect-ratio false-detection(s) (length/width < %s)",
+                dropped, min_ar,
             )
 
     if not collected:
@@ -279,6 +281,7 @@ def run_batch_inspection(
             outlier_count=0,
             inlier_ratio=0.0,
             defect_snapshots_dir=None,
+            normal_snapshots_dir=None,
         )
 
     try:
@@ -303,6 +306,7 @@ def run_batch_inspection(
             outlier_count=0,
             inlier_ratio=0.0,
             defect_snapshots_dir=None,
+            normal_snapshots_dir=None,
         )
 
     normal_bars = sum(1 for r in classified.bars if r.result == "normal")
@@ -391,7 +395,7 @@ def _classify_with_auto_baseline(
     profile: Profile,
 ) -> _ClassificationOutcome:
     records = [bar.measurements for bar in collected]
-    outcome = CalibrationEngine().calibrate(records, profile)
+    outcome = calibrate_records(records, profile)
 
     if not outcome.success or outcome.calibration_result is None or outcome.updated_profile is None:
         raise ValueError(outcome.reason)
@@ -491,21 +495,28 @@ def _make_vlm_crop(frame: np.ndarray, roi_config) -> np.ndarray:
     ].copy()
 
 
+def _save_box_contour_snapshot(
+    frame: np.ndarray,
+    bar: BarResult,
+    snapshots_dir: Path,
+) -> None:
+    image = frame.copy()
+    cv2.drawContours(image, [bar.contour_frame.astype(np.int32)], -1, (0, 255, 0), 1)
+    x1, y1, x2, y2 = (int(v) for v in bar.bbox_frame_xyxy)
+    cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+    output = snapshots_dir / f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
+    try:
+        cv2.imwrite(str(output), image)
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Snapshot write failure for track_id=%s: %s", bar.track_id, exc)
+
+
 def _write_defect_snapshots(defects: list[BarResult], snapshots_dir: Path) -> None:
-    """Write full-frame snapshots with green contour + red bbox rect for defective bars."""
     snapshots_dir.mkdir(parents=True, exist_ok=True)
     for bar in defects:
         if bar.source_frame is None:
             continue
-        image = bar.source_frame.copy()
-        cv2.drawContours(image, [bar.contour_frame.astype(np.int32)], -1, (0, 255, 0), 1)
-        x1, y1, x2, y2 = (int(v) for v in bar.bbox_frame_xyxy)
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
-        output = snapshots_dir / f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
-        try:
-            cv2.imwrite(str(output), image)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("Snapshot write failure for track_id=%s: %s", bar.track_id, exc)
+        _save_box_contour_snapshot(bar.source_frame, bar, snapshots_dir)
 
 
 def _write_normal_snapshots(normals: list[BarResult], snapshots_dir: Path) -> None:
@@ -544,4 +555,7 @@ __all__ = [
     "BarResult",
     "CollectedBar",
     "run_batch_inspection",
+    "_save_box_contour_snapshot",
+    "_write_defect_snapshots",
+    "_write_normal_snapshots",
 ]

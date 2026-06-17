@@ -20,7 +20,6 @@ import settings
 
 LOGGER = logging.getLogger(__name__)
 
-_UPLOAD_EXPIRE_SECONDS = 1800   # waiting_upload → upload_expired after 30 min
 
 _worker_wakeup = threading.Event()
 _start_lock = threading.Lock()
@@ -81,10 +80,6 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
 
 # ── Job processor ─────────────────────────────────────────────────────────────
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 def _process_job(job_id: str) -> None:
     # Import here to avoid circular import at module load time
     from drag_conveyor.app.batch import run_batch_inspection
@@ -114,7 +109,7 @@ def _process_job(job_id: str) -> None:
         LOGGER.info("[%s] Video OK: %d frames", job_id, total_frames)
 
         # 3. Load base profile and apply client ROI
-        db.update_status(job_id, "processing", _now())
+        db.update_status(job_id, "processing", db.now())
         profile = load_profile(settings.BASE_PROFILE_PATH)
         inspection_mode = str(row["inspection_mode"] or profile.inspection.mode)
         profile = profile.with_roi(roi_config)
@@ -154,12 +149,12 @@ def _process_job(job_id: str) -> None:
         db.save_result(
             job_id=job_id,
             summary=summary,
-            now=_now(),
+            now=db.now(),
             success=result.success,
         )
 
         # 7. Cleanup — only after SQLite write confirmed
-        if settings.DELETE_VIDEO_AFTER_SUCCESS:
+        if settings.DELETE_VIDEO_AFTER_SUCCESS and result.success:
             try:
                 r2.delete_object(row["object_key"])
                 LOGGER.info("[%s] Video deleted from R2", job_id)
@@ -171,14 +166,14 @@ def _process_job(job_id: str) -> None:
 
     except Exception as exc:
         LOGGER.exception("[%s] Job failed: %s", job_id, exc)
-        db.update_status(job_id, "failed", _now(), error_message=str(exc))
+        db.update_status(job_id, "failed", db.now(), error_message=str(exc))
         # Keep temp files on failure — useful for post-mortem
 
 
 # ── Worker thread ─────────────────────────────────────────────────────────────
 
 def _claim_and_process_next_job() -> bool:
-    job_id = db.claim_next_uploaded_job(_now())
+    job_id = db.claim_next_uploaded_job(db.now())
     if job_id is None:
         return False
 
@@ -206,9 +201,9 @@ def _run_cleanup() -> None:
     now_dt = datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
 
-    upload_cutoff = (now_dt - timedelta(seconds=_UPLOAD_EXPIRE_SECONDS)).isoformat()
+    upload_cutoff = (now_dt - timedelta(seconds=settings.UPLOAD_EXPIRE_SECONDS)).isoformat()
     for jid in db.expire_stale_uploads(upload_cutoff, now_iso):
-        LOGGER.info("[%s] upload_expired (no upload after %ds)", jid, _UPLOAD_EXPIRE_SECONDS)
+        LOGGER.info("[%s] upload_expired (no upload after %ds)", jid, settings.UPLOAD_EXPIRE_SECONDS)
 
     proc_cutoff = (now_dt - timedelta(seconds=settings.MAX_JOB_DURATION_SECONDS)).isoformat()
     for jid in db.timeout_processing(proc_cutoff, now_iso):
@@ -219,7 +214,7 @@ def _run_cleanup() -> None:
 
 def _cleanup_loop() -> None:
     LOGGER.info("Job cleanup loop ready (upload_expire=%ds, proc_timeout=%ds)",
-                _UPLOAD_EXPIRE_SECONDS, settings.MAX_JOB_DURATION_SECONDS)
+                settings.UPLOAD_EXPIRE_SECONDS, settings.MAX_JOB_DURATION_SECONDS)
     while True:
         time.sleep(60)
         try:

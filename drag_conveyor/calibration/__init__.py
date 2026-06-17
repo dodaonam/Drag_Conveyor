@@ -1,5 +1,5 @@
 from __future__ import annotations
 
-from ._core import CalibrationEngine, CalibrationOutcome
+from ._core import CalibrationOutcome, calibrate
 
-__all__ = ["CalibrationEngine", "CalibrationOutcome"]
+__all__ = ["calibrate", "CalibrationOutcome"]

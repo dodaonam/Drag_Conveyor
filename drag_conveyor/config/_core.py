@@ -92,9 +92,16 @@ class TrackerConfig:
 
 
 @dataclass(slots=True)
+class DetectionFilterConfig:
+    min_aspect_ratio: float
+    area_divisor: float
+
+
+@dataclass(slots=True)
 class CollectionConfig:
     trigger_band: TriggerBandConfig
     tracker: TrackerConfig
+    detection_filter: DetectionFilterConfig
 
 
 @dataclass(slots=True)
@@ -215,12 +222,8 @@ class Profile:
 
         if cloned.model.model_zoo:
             long_side = max(roi.w, roi.h)
-            if long_side < 320:
-                target_size = 320
-            elif long_side < 416:
-                target_size = 416
-            else:
-                target_size = 640
+            sizes = sorted(int(k) for k in cloned.model.model_zoo)
+            target_size = next((s for s in sizes if s >= long_side), sizes[-1])
             path = cloned.model.model_zoo.get(str(target_size))
             if path:
                 cloned.model.path = path
@@ -444,6 +447,7 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
     collection_raw = _required_section(data, "collection")
     trigger_raw = _required_section(collection_raw, "trigger_band", "collection.trigger_band")
     tracker_raw = _required_section(collection_raw, "tracker", "collection.tracker")
+    detection_filter_raw = _required_section(collection_raw, "detection_filter", "collection.detection_filter")
     inspection_raw = _required_section(data, "inspection")
     defect_policy_raw = _required_section(
         inspection_raw,
@@ -497,7 +501,12 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
     )
     _reject_unknown_keys(region_raw, {"frame_width", "frame_height", "roi"}, "region")
     _reject_unknown_keys(roi_raw, {"x", "y", "w", "h"}, "region.roi")
-    _reject_unknown_keys(collection_raw, {"trigger_band", "tracker"}, "collection")
+    _reject_unknown_keys(collection_raw, {"trigger_band", "tracker", "detection_filter"}, "collection")
+    _reject_unknown_keys(
+        detection_filter_raw,
+        {"min_aspect_ratio", "area_divisor"},
+        "collection.detection_filter",
+    )
     _reject_unknown_keys(
         trigger_raw,
         {
@@ -728,6 +737,18 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                         "collection.tracker.max_area_ratio_change",
                     ),
                 ),
+                detection_filter=DetectionFilterConfig(
+                    min_aspect_ratio=_required_float(
+                        detection_filter_raw,
+                        "min_aspect_ratio",
+                        "collection.detection_filter.min_aspect_ratio",
+                    ),
+                    area_divisor=_required_float(
+                        detection_filter_raw,
+                        "area_divisor",
+                        "collection.detection_filter.area_divisor",
+                    ),
+                ),
             ),
             inspection=InspectionConfig(
                 mode=_required_str(inspection_raw, "mode", "inspection.mode"),
@@ -917,6 +938,12 @@ def validate_profile(profile: Profile) -> None:
         raise ProfileError("collection.tracker.max_reverse_px must be >= 0")
     if tracker.max_area_ratio_change < 1:
         raise ProfileError("collection.tracker.max_area_ratio_change must be >= 1")
+
+    detection_filter = profile.collection.detection_filter
+    if detection_filter.min_aspect_ratio <= 0:
+        raise ProfileError("collection.detection_filter.min_aspect_ratio must be > 0")
+    if detection_filter.area_divisor <= 0:
+        raise ProfileError("collection.detection_filter.area_divisor must be > 0")
 
     policy = inspection.defect_policy
     if policy.min_violated_dimensions < 1:

@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 import unicodedata
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 _TZ_ICT = timezone(timedelta(hours=7))
 from pathlib import Path
@@ -49,10 +50,6 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
 
 _ALLOWED_CONTENT_TYPES = {"video/mp4", "video/webm", "video/quicktime"}
 
@@ -194,6 +191,8 @@ def create_job(body: CreateJobIn) -> CreateJobOut:
     inspection_mode = body.inspection_mode or profile.inspection.mode
     if body.content_type not in _ALLOWED_CONTENT_TYPES:
         raise HTTPException(status_code=422, detail=f"Unsupported content_type: {body.content_type}")
+    if body.size_bytes <= 0:
+        raise HTTPException(status_code=422, detail="size_bytes must be > 0")
     if body.size_bytes > settings.MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=422,
@@ -202,15 +201,16 @@ def create_job(body: CreateJobIn) -> CreateJobOut:
     roi = body.roi
 
     now_dt = datetime.now(_TZ_ICT)
-    job_id = "{}_{}_{}_{}".format(
+    job_id = "{}_{}_{}_{}_{}".format(
         now_dt.strftime('%d%m%Y'),
         _normalize_name(body.inspector_name),
         _normalize_name(body.conveyor_name),
         now_dt.strftime('%H%M%S'),
+        secrets.token_hex(3),
     )
     ext = _EXT_MAP[body.content_type]
     object_key = f"uploads/{job_id}/input.{ext}"
-    now = _now()
+    now = db.now()
 
     put_url = r2.presigned_put_url(
         object_key=object_key,
@@ -244,7 +244,7 @@ def upload_complete(job_id: str) -> dict[str, str]:
     if not r2.object_exists(row["object_key"]):
         raise HTTPException(status_code=422, detail="Video not found on R2 — upload may have failed")
 
-    db.mark_uploaded(job_id, _now())
+    db.mark_uploaded(job_id, db.now())
     worker.wake()
 
     return {"status": "uploaded"}

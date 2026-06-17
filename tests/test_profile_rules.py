@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from drag_conveyor.calibration import CalibrationEngine
+from drag_conveyor.calibration import calibrate as calibrate_records
 from drag_conveyor.config import (
     CalibrationResult,
     FeatureStats,
@@ -89,9 +89,9 @@ class ProfileRulesTests(unittest.TestCase):
         self.assertEqual(updated.region.roi.x, 10)
         self.assertEqual(updated.region.roi.y, 20)
         self.assertEqual(updated.collection.trigger_band.position_ratio, 0.5)
-        self.assertEqual(updated.collection.trigger_band.thickness_ratio, 0.25)
+        self.assertEqual(updated.collection.trigger_band.thickness_ratio, 0.2)
         band = build_trigger_band(updated.region, updated.collection.trigger_band)
-        self.assertEqual((band.x1, band.y1, band.x2, band.y2), (10, 65, 110, 95))
+        self.assertEqual((band.x1, band.y1, band.x2, band.y2), (10, 68, 110, 92))
         self.assertEqual(band.centerline, 80.0)
 
         with self.assertRaises(ProfileError):
@@ -192,7 +192,7 @@ class ProfileRulesTests(unittest.TestCase):
         raw = _base_profile_dict()
 
         self.assertEqual(raw["collection"]["trigger_band"]["position_ratio"], 0.5)
-        self.assertEqual(raw["collection"]["trigger_band"]["thickness_ratio"], 0.25)
+        self.assertEqual(raw["collection"]["trigger_band"]["thickness_ratio"], 0.2)
         self.assertIn("/api/runtime-config", html)
         self.assertIn("collection?.trigger_band", html)
         self.assertIn("bandConfig.position_ratio", html)
@@ -249,13 +249,13 @@ class ProfileRulesTests(unittest.TestCase):
 
         normal = engine.evaluate({"length": 92.0, "width": 18.0}, rules, policy, calibration)
         short = engine.evaluate({"length": 90.5, "width": 18.0}, rules, policy, calibration)
-        long = engine.evaluate({"length": 109.5, "width": 18.0}, rules, policy, calibration)
+        long = engine.evaluate({"length": 115.0, "width": 18.0}, rules, policy, calibration)
 
         self.assertEqual(normal.result, "normal")
         self.assertEqual(short.reasons, ["length_too_short"])
         self.assertEqual(long.reasons, ["length_too_long"])
         self.assertEqual(normal.thresholds["length_min"], 91.0)
-        self.assertEqual(normal.thresholds["length_max"], 109.0)
+        self.assertEqual(normal.thresholds["length_max"], 114.45)
         with self.assertRaisesRegex(ValueError, "missing percentile: p10"):
             engine.evaluate(
                 {"length": 100.0, "width": 20.0},
@@ -278,7 +278,7 @@ class ProfileRulesTests(unittest.TestCase):
             {"length": 99.5, "width": 19.8},
         ]
 
-        outcome = CalibrationEngine().calibrate(records, profile)
+        outcome = calibrate_records(records, profile)
 
         self.assertTrue(outcome.success)
         self.assertIsNotNone(outcome.updated_profile)

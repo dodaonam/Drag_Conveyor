@@ -29,6 +29,7 @@ TEMP_DIR = (_SERVER_DIR / os.environ.get("TEMP_DIR", "runtime/temp")).resolve()
 
 MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 209_715_200))
 MAX_JOB_DURATION_SECONDS: int = int(os.environ.get("MAX_JOB_DURATION_SECONDS", 900))
+UPLOAD_EXPIRE_SECONDS: int = int(os.environ.get("UPLOAD_EXPIRE_SECONDS", 1800))
 PRESIGNED_PUT_EXPIRES: int = int(os.environ.get("PRESIGNED_PUT_EXPIRES_SECONDS", 1800))
 PRESIGNED_GET_EXPIRES: int = int(os.environ.get("PRESIGNED_GET_EXPIRES_SECONDS", 3600))
 DELETE_VIDEO_AFTER_SUCCESS: bool = (

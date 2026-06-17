@@ -49,8 +49,10 @@ def object_exists(object_key: str) -> bool:
     try:
         _client().head_object(Bucket=settings.R2_BUCKET_NAME, Key=object_key)
         return True
-    except ClientError:
-        return False
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return False
+        raise
 
 
 def delete_object(object_key: str) -> None:

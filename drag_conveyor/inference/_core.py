@@ -4,7 +4,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import cv2
 import numpy as np
@@ -45,14 +45,6 @@ class Detection:
     centroid_frame_xy: tuple[float, float]
     mask_roi: np.ndarray
     contour_frame: np.ndarray
-
-
-class InferenceEngine(Protocol):
-    def load(self, model_path: str, model_spec: ModelConfig) -> ModelDiagnostics: ...
-
-    def infer(self, input_tensor: np.ndarray) -> tuple[np.ndarray, np.ndarray]: ...
-
-    def close(self) -> None: ...
 
 
 class OnnxRuntimeEngine:
@@ -192,6 +184,11 @@ def preprocess_roi(
     )
 
 
+from .yolo_seg_postprocess import YoloSegPostprocessor as _YoloSegPostprocessor
+
+_postprocessor = _YoloSegPostprocessor()
+
+
 def postprocess_segmentation(
     det_output: np.ndarray,
     proto_output: np.ndarray,
@@ -199,10 +196,7 @@ def postprocess_segmentation(
     model_spec: ModelConfig,
     postprocess_config: PostprocessConfig,
 ) -> list[Detection]:
-    from .yolo_seg_postprocess import YoloSegPostprocessor
-
-    postprocessor = YoloSegPostprocessor()
-    detections = postprocessor.decode(
+    detections = _postprocessor.decode(
         det_output=det_output,
         proto_output=proto_output,
         preprocess=preprocess,

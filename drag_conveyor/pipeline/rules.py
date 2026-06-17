@@ -10,10 +10,8 @@ class RuleEvaluation:
     result: str
     score: float
     reasons: list[str]
-    measurements: dict[str, float]
     thresholds: dict[str, float]
     margins: dict[str, float]
-    hard_fail: bool
 
 
 class RuleEngine:
@@ -70,10 +68,8 @@ class RuleEngine:
             result=result,
             score=score,
             reasons=reasons,
-            measurements=measurements,
             thresholds=thresholds,
             margins=margins,
-            hard_fail=result == "suspected_defect",
         )
 
 

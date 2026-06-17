@@ -3,5 +3,5 @@ from __future__ import annotations
 import cv2
 
 
-def open_video_source(source: str) -> tuple[cv2.VideoCapture, str]:
-    return cv2.VideoCapture(source.strip()), "FILE"
+def open_video_source(source: str) -> cv2.VideoCapture:
+    return cv2.VideoCapture(source.strip())

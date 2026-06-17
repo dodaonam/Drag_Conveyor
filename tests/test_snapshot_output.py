@@ -13,6 +13,7 @@ class SnapshotOutputTests(unittest.TestCase):
     def test_defect_snapshot_contains_only_box_and_contour_overlays(self) -> None:
         frame = np.zeros((80, 100, 3), dtype=np.uint8)
         bar = batch.BarResult(
+            bar_id="run_track_000003",
             frame_id=7,
             track_id=3,
             result="suspected_defect",
@@ -54,6 +55,7 @@ class SnapshotOutputTests(unittest.TestCase):
     def test_write_defect_snapshots_uses_captured_source_frame(self) -> None:
         frame = np.zeros((40, 40, 3), dtype=np.uint8)
         bar = batch.BarResult(
+            bar_id="run_track_000011",
             frame_id=3,
             track_id=11,
             result="suspected_defect",

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+from typing import get_args
 
 import cv2
 import numpy as np
@@ -17,7 +18,7 @@ from .schema import DefectReason, make_openai_llm
 LOGGER = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "gpt-4o-mini"
-_EXAMPLE_LABELS = {"bent_left", "bent_right", "bent_both", "broken", "other"}
+_EXAMPLE_LABELS = set(get_args(DefectReason.model_fields["defect_type"].annotation))
 _EXAMPLES_DIR = Path(__file__).resolve().parents[2] / "data" / "example"
 
 
