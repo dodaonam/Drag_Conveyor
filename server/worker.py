@@ -41,9 +41,12 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
         snap_name = f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
         snap_key = next((k for k in defect_keys if k.endswith(snap_name)), None)
         defects.append({
+            "bar_id": bar.bar_id,
             "track_id": bar.track_id,
             "frame_id": bar.frame_id,
             "reasons": bar.reasons,
+            "defect_type": bar.defect_type,
+            "vlm_called": bar.vlm_called,
             "length": bar.measurements.get("length", 0.0),
             "width": bar.measurements.get("width", 0.0),
             "snapshot_key": snap_key,
@@ -69,6 +72,7 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
         "inlier_count": result.inlier_count,
         "outlier_count": result.outlier_count,
         "inlier_ratio": result.inlier_ratio,
+        "vlm_request_count": result.vlm_request_count,
         "failure_reason": result.failure_reason,
         "defects": defects,
         "normals": normals,

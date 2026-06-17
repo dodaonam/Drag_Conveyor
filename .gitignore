@@ -217,10 +217,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .omx/
-data/*
-!data/raw_data/
-data/raw_data/*
-!data/raw_data/vid_1.mp4
 model/
 train/
 scripts/

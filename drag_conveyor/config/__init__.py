@@ -21,6 +21,7 @@ from ._core import (
     RoiConfig,
     TrackerConfig,
     TriggerBandConfig,
+    VlmConfig,
     load_profile,
     migrate_profile_dict,
     profile_from_dict,
@@ -56,4 +57,5 @@ __all__ = [
     "profile_to_dict",
     "load_profile",
     "save_profile",
+    "VlmConfig",
 ]

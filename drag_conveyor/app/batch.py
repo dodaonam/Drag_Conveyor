@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -27,6 +27,7 @@ from ..pipeline.trigger import (
     mask_overlap_ratio_with_band,
 )
 from ..video_io import open_video_source
+from ..vlm.inspector import VlmInspector
 from .ids import generate_run_id
 
 LOGGER = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class CollectedBar:
+    bar_id: str
     frame_id: int
     track_id: int
     measurements: dict[str, float]
@@ -46,6 +48,7 @@ class CollectedBar:
 
 @dataclass(frozen=True, slots=True)
 class BarResult:
+    bar_id: str
     frame_id: int
     track_id: int
     result: str
@@ -58,6 +61,8 @@ class BarResult:
     contour_frame: np.ndarray
     latency_ms: float
     source_frame: np.ndarray | None = None
+    defect_type: str | None = None
+    vlm_called: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +81,14 @@ class BatchInspectionResult:
     inlier_ratio: float
     defect_snapshots_dir: Path | None
     normal_snapshots_dir: Path | None
+    vlm_request_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _VlmInput:
+    bar_id: str
+    crop_image: np.ndarray
+    reasons: list[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +217,7 @@ def run_batch_inspection(
                 measurements = measure_contour(track.detection.contour_frame).to_dict()
                 collected.append(
                     CollectedBar(
+                        bar_id=f"{run_id}_track_{track.track_id:06d}",
                         frame_id=frame_count,
                         track_id=track.track_id,
                         measurements=measurements,
@@ -219,6 +233,35 @@ def run_batch_inspection(
         engine.close()
 
     LOGGER.info("Collected %d bars from %d frames", len(collected), frame_count)
+
+    # Filter out false detections (e.g. chain links misdetected as bars).
+    if collected:
+        # 1. Area filter: drop if area < max_area / 150
+        areas = [b.measurements["length"] * b.measurements["width"] for b in collected]
+        max_area = max(areas)
+        area_threshold = max_area / 50.0
+        before = len(collected)
+        collected = [b for b, a in zip(collected, areas) if a >= area_threshold]
+        dropped = before - len(collected)
+        if dropped:
+            LOGGER.info(
+                "Dropped %d tiny false-detection(s) (area < %.0f px², max=%.0f px²)",
+                dropped, area_threshold, max_area,
+            )
+
+        # 2. Aspect ratio filter: drop if length/width < 2.75 (chain links are near-square)
+        before = len(collected)
+        collected = [
+            b for b in collected
+            if b.measurements["width"] > 0
+            and b.measurements["length"] / b.measurements["width"] >= 3
+        ]
+        dropped = before - len(collected)
+        if dropped:
+            LOGGER.info(
+                "Dropped %d low-aspect-ratio false-detection(s) (length/width < 2.75)",
+                dropped,
+            )
 
     if not collected:
         LOGGER.error("No bars detected. Check model, confidence threshold, and trigger band config.")
@@ -266,16 +309,49 @@ def run_batch_inspection(
     defect_bars = len(classified.bars) - normal_bars
     LOGGER.info("Classification: %d normal, %d defect", normal_bars, defect_bars)
 
+    # --- Phase 3: VLM — gửi toàn bộ thanh nghi lỗi trong 1 request ---
+    bar_by_id = {bar.bar_id: bar for bar in collected}
+    vlm_decisions: dict[str, str] = {}
+    vlm_request_count = 0
+
+    defective_results = [r for r in classified.bars if r.result == "suspected_defect"]
+    if defective_results and profile.inspection.vlm is not None:
+        try:
+            inspector = VlmInspector.from_profile(profile)
+            vlm_inputs = [
+                _VlmInput(
+                    bar_id=r.bar_id,
+                    crop_image=_make_vlm_crop(bar_by_id[r.bar_id].source_frame, roi_config),
+                    reasons=r.reasons,
+                )
+                for r in defective_results
+            ]
+            raw_decisions = inspector.inspect(vlm_inputs)
+            vlm_decisions = {bar_id: d.defect_type for bar_id, d in raw_decisions.items()}
+            vlm_request_count = inspector.request_count
+            LOGGER.info(
+                "VLM classified %d/%d defective bars",
+                len(vlm_decisions), len(defective_results),
+            )
+        except Exception as exc:
+            LOGGER.warning("VLM inspection failed, continuing without: %s", exc)
+
+    final_bars = [
+        replace(r, defect_type=vlm_decisions[r.bar_id], vlm_called=True)
+        if r.bar_id in vlm_decisions else r
+        for r in classified.bars
+    ]
+
     # --- Phase 4: Ghi snapshots (defects/ và normals/ trong cùng snapshots_root) ---
     defect_snapshots_dir: Path | None = None
     normal_snapshots_dir: Path | None = None
     if snapshots_root is not None:
         run_snapshots = Path(snapshots_root) / run_id
-        defects_list = [r for r in classified.bars if r.result == "suspected_defect"]
+        defects_list = [r for r in final_bars if r.result == "suspected_defect"]
         if defects_list:
             defect_snapshots_dir = run_snapshots / "defects"
             _write_defect_snapshots(defects_list, defect_snapshots_dir)
-        normals_list = [r for r in classified.bars if r.result == "normal"]
+        normals_list = [r for r in final_bars if r.result == "normal"]
         if normals_list:
             normal_snapshots_dir = run_snapshots / "normals"
             _write_normal_snapshots(normals_list, normal_snapshots_dir)
@@ -285,8 +361,8 @@ def run_batch_inspection(
         success=True,
         failure_reason="",
         calibration_result=classified.calibration_result,
-        bars=classified.bars,
-        total_bars=len(classified.bars),
+        bars=final_bars,
+        total_bars=len(final_bars),
         normal_bars=normal_bars,
         defect_bars=defect_bars,
         frames_scanned=frame_count,
@@ -295,6 +371,7 @@ def run_batch_inspection(
         inlier_ratio=classified.inlier_ratio,
         defect_snapshots_dir=defect_snapshots_dir,
         normal_snapshots_dir=normal_snapshots_dir,
+        vlm_request_count=vlm_request_count,
     )
 
 
@@ -334,6 +411,7 @@ def _classify_with_auto_baseline(
         )
         bar_results.append(
             BarResult(
+                bar_id=bar.bar_id,
                 frame_id=bar.frame_id,
                 track_id=bar.track_id,
                 result=evaluation.result,
@@ -379,6 +457,7 @@ def _classify_with_average_ratio(collected: list[CollectedBar], profile: Profile
         evaluation = inspector.evaluate(bar.measurements, averages)
         bar_results.append(
             BarResult(
+                bar_id=bar.bar_id,
                 frame_id=bar.frame_id,
                 track_id=bar.track_id,
                 result=evaluation.result,
@@ -403,12 +482,30 @@ def _classify_with_average_ratio(collected: list[CollectedBar], profile: Profile
     )
 
 
+
+def _make_vlm_crop(frame: np.ndarray, roi_config) -> np.ndarray:
+    """Plain ROI crop — no contour drawn. bar_id text added by _encode."""
+    return frame[
+        roi_config.y : roi_config.y + roi_config.h,
+        roi_config.x : roi_config.x + roi_config.w,
+    ].copy()
+
+
 def _write_defect_snapshots(defects: list[BarResult], snapshots_dir: Path) -> None:
+    """Write full-frame snapshots with green contour + red bbox rect for defective bars."""
     snapshots_dir.mkdir(parents=True, exist_ok=True)
-    for defect in defects:
-        if defect.source_frame is None:
+    for bar in defects:
+        if bar.source_frame is None:
             continue
-        _save_box_contour_snapshot(defect.source_frame, defect, snapshots_dir)
+        image = bar.source_frame.copy()
+        cv2.drawContours(image, [bar.contour_frame.astype(np.int32)], -1, (0, 255, 0), 1)
+        x1, y1, x2, y2 = (int(v) for v in bar.bbox_frame_xyxy)
+        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+        output = snapshots_dir / f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
+        try:
+            cv2.imwrite(str(output), image)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("Snapshot write failure for track_id=%s: %s", bar.track_id, exc)
 
 
 def _write_normal_snapshots(normals: list[BarResult], snapshots_dir: Path) -> None:
@@ -426,25 +523,7 @@ def _save_contour_snapshot(
 ) -> None:
     image = frame.copy()
     contour = bar.contour_frame.astype(np.int32)
-    cv2.drawContours(image, [contour], -1, (0, 255, 0), 2)
-    output = snapshots_dir / f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
-    try:
-        cv2.imwrite(str(output), image)
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("Snapshot write failure for track_id=%s: %s", bar.track_id, exc)
-
-
-def _save_box_contour_snapshot(
-    frame: np.ndarray,
-    bar: BarResult,
-    snapshots_dir: Path,
-) -> None:
-    image = frame.copy()
-    bx1, by1, bx2, by2 = [int(v) for v in bar.bbox_frame_xyxy]
-    cv2.rectangle(image, (bx1, by1), (bx2, by2), (0, 0, 255), 2)
-    contour = bar.contour_frame.astype(np.int32)
-    cv2.drawContours(image, [contour], -1, (0, 255, 0), 2)
-
+    cv2.drawContours(image, [contour], -1, (0, 255, 0), 1)
     output = snapshots_dir / f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
     try:
         cv2.imwrite(str(output), image)

@@ -167,11 +167,17 @@ class AverageRatioConfig:
 
 
 @dataclass(slots=True)
+class VlmConfig:
+    model: str
+
+
+@dataclass(slots=True)
 class InspectionConfig:
     mode: str
     defect_policy: DefectPolicyConfig
     auto_baseline: AutoBaselineConfig
     average_ratio: AverageRatioConfig
+    vlm: VlmConfig | None = None
 
 
 @dataclass(slots=True)
@@ -405,6 +411,18 @@ def migrate_profile_dict(raw: dict[str, Any]) -> dict[str, Any]:
     raise ProfileError(f"No migration path from profile_version {version} to {PROFILE_VERSION}")
 
 
+def _parse_vlm_config(inspection_raw: dict[str, Any]) -> VlmConfig | None:
+    vlm_raw = inspection_raw.get("vlm")
+    if vlm_raw is None:
+        return None
+    if not isinstance(vlm_raw, dict):
+        raise ProfileError("inspection.vlm must be an object")
+    _reject_unknown_keys(vlm_raw, {"model"}, "inspection.vlm")
+    return VlmConfig(
+        model=_required_str(vlm_raw, "model", "inspection.vlm.model"),
+    )
+
+
 def profile_from_dict(raw: dict[str, Any]) -> Profile:
     data = migrate_profile_dict(raw)
     _reject_unknown_keys(
@@ -501,7 +519,7 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
     )
     _reject_unknown_keys(
         inspection_raw,
-        {"mode", "defect_policy", "auto_baseline", "average_ratio"},
+        {"mode", "defect_policy", "auto_baseline", "average_ratio", "vlm"},
         "inspection",
     )
     _reject_unknown_keys(
@@ -796,6 +814,7 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                         "inspection.average_ratio.length_max_ratio",
                     ),
                 ),
+                vlm=_parse_vlm_config(inspection_raw),
             ),
         )
     except (TypeError, ValueError, KeyError) as exc:
@@ -949,6 +968,11 @@ def validate_profile(profile: Profile) -> None:
         if missing_features:
             missing = ", ".join(sorted(missing_features))
             raise ProfileError(f"calibration_result missing required features: {missing}")
+
+    vlm = inspection.vlm
+    if vlm is not None:
+        if not vlm.model.strip():
+            raise ProfileError("inspection.vlm.model must not be empty")
 
 
 def profile_to_dict(profile: Profile) -> dict[str, Any]:

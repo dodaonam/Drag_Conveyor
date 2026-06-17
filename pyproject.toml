@@ -7,9 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.43.24",
     "fastapi>=0.115.0",
+    "langchain-core>=0.3.0",
+    "langchain-openai>=0.3.0",
     "onnx>=1.21.0",
     "onnxruntime-gpu>=1.26.0",
     "opencv-python>=4.13.0.92",
+    "pydantic>=2.0",
     "python-dotenv>=1.2.2",
     "uvicorn[standard]>=0.30.0",
 ]
