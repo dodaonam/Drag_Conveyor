@@ -227,3 +227,4 @@ server/jobs.db
 docs/
 .gitnexus
 NOTE.md
+config/app_settings.json

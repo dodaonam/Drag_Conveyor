@@ -1612,9 +1612,13 @@
         G.allDefects.push({ bar_id: newBarId, track_id: trackId, frame_id: bar.frame_id, reasons: [], defect_type: newType, vlm_called: true, length: bar.length, width: bar.width, snapshot_key: bar.snapshot_key, snapshot_url: bar.snapshot_url });
       }
 
-      document.getElementById('tab-count-defect').textContent = G.allDefects.length;
+      const defectCount = G.allDefects.length;
+      document.getElementById('tab-count-defect').textContent = defectCount;
       document.getElementById('tab-count-normal').textContent = G.allNormals.length;
-      document.getElementById('no-defect').style.display = G.allDefects.length === 0 ? 'block' : 'none';
+      document.getElementById('no-defect').style.display = defectCount === 0 ? 'block' : 'none';
+      document.getElementById('stat-grid').innerHTML =
+        statBox(G.allDefects.length + G.allNormals.length, 'Tổng thanh', '') +
+        statBox(defectCount, 'Thanh lỗi', defectCount > 0 ? 'bad' : 'ok');
       _initDefectSubtabs();
       const activeKey = G.activeDefectSubtab && _filterBySubtab(G.allDefects, G.activeDefectSubtab).length > 0
         ? G.activeDefectSubtab

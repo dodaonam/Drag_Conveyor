@@ -1,9 +1,10 @@
 {
   "profile_version": "1.0.0",
   "model": {
-    "path": "white_bar_model_multi_imgsz/model_imgsz_640/best.onnx",
+    "path": "weights/model_imgsz_640/best.onnx",
     "backend": "onnxruntime",
     "providers": [
+      "CUDAExecutionProvider",
       "CPUExecutionProvider"
     ],
     "task": "segmentation",
@@ -83,11 +84,11 @@
       "width_lower_percentile": "p1",
       "width_upper_percentile": "p98",
       "length_lower_margin": 0.0,
-      "length_upper_margin": 0.05,
-      "width_lower_margin": 0.05,
+      "length_upper_margin": 0.15,
+      "width_lower_margin": 0.15,
       "width_upper_margin": 0.0,
       "calibration": {
-        "min_valid_records": 45,
+        "min_valid_records": 50,
         "min_inlier_ratio": 0.7,
         "max_outlier_ratio": 0.3,
         "outlier": {
