@@ -63,6 +63,8 @@ class BarResult:
     source_frame: np.ndarray | None = None
     defect_type: str | None = None
     vlm_called: bool = False
+    # Verdict hình học gốc (trước VLM). `result` là verdict cuối — VLM có thể hạ về "normal".
+    rule_result: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,9 +311,9 @@ def run_batch_inspection(
             normal_snapshots_dir=None,
         )
 
-    normal_bars = sum(1 for r in classified.bars if r.result == "normal")
-    defect_bars = len(classified.bars) - normal_bars
-    LOGGER.info("Classification: %d normal, %d defect", normal_bars, defect_bars)
+    rule_normal_bars = sum(1 for r in classified.bars if r.result == "normal")
+    rule_defect_bars = len(classified.bars) - rule_normal_bars
+    LOGGER.info("Rule classification: %d normal, %d suspected", rule_normal_bars, rule_defect_bars)
 
     # --- Phase 3: VLM — gửi toàn bộ thanh nghi lỗi trong 1 request ---
     bar_by_id = {bar.bar_id: bar for bar in collected}
@@ -340,11 +342,27 @@ def run_batch_inspection(
         except Exception as exc:
             LOGGER.warning("VLM inspection failed, continuing without: %s", exc)
 
-    final_bars = [
-        replace(r, defect_type=vlm_decisions[r.bar_id], vlm_called=True)
-        if r.bar_id in vlm_decisions else r
-        for r in classified.bars
-    ]
+    # Chỉ cho VLM hạ verdict về normal khi bật cờ (mặc định OFF để giữ recall cao).
+    can_mark_normal = profile.inspection.vlm is not None and profile.inspection.vlm.can_mark_normal
+
+    def _apply_vlm_decision(bar: BarResult) -> BarResult:
+        decision = vlm_decisions.get(bar.bar_id)
+        if decision is None:
+            return bar
+        # VLM xác nhận "normal" → hạ verdict cuối về normal (loại false positive của rule).
+        if decision == "normal" and can_mark_normal:
+            return replace(bar, result="normal", defect_type="normal", vlm_called=True)
+        return replace(bar, defect_type=decision, vlm_called=True)
+
+    final_bars = [_apply_vlm_decision(r) for r in classified.bars]
+
+    # Đếm lại sau VLM: thanh được VLM hạ về normal không còn tính là lỗi.
+    normal_bars = sum(1 for r in final_bars if r.result == "normal")
+    defect_bars = len(final_bars) - normal_bars
+    overturned = rule_defect_bars - defect_bars
+    if overturned > 0:
+        LOGGER.info("VLM overturned %d false positive(s) to normal", overturned)
+    LOGGER.info("Final classification: %d normal, %d defect", normal_bars, defect_bars)
 
     # --- Phase 4: Ghi snapshots (defects/ và normals/ trong cùng snapshots_root) ---
     defect_snapshots_dir: Path | None = None
@@ -419,6 +437,7 @@ def _classify_with_auto_baseline(
                 frame_id=bar.frame_id,
                 track_id=bar.track_id,
                 result=evaluation.result,
+                rule_result=evaluation.result,
                 score=evaluation.score,
                 reasons=list(evaluation.reasons),
                 measurements=dict(bar.measurements),
@@ -465,6 +484,7 @@ def _classify_with_average_ratio(collected: list[CollectedBar], profile: Profile
                 frame_id=bar.frame_id,
                 track_id=bar.track_id,
                 result=evaluation.result,
+                rule_result=evaluation.result,
                 score=evaluation.score,
                 reasons=list(evaluation.reasons),
                 measurements=dict(bar.measurements),

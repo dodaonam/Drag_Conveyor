@@ -79,3 +79,18 @@ Respond ONLY with a valid JSON array — one object per bar, no markdown, no exp
 ]
 If there is only one bar, still return a JSON array with one element.
 """
+
+
+# Phụ lục chỉ được nối vào SYSTEM_PROMPT khi inspection.vlm.can_mark_normal = true.
+# Khi đó VLM được phép lật false positive của rule về "normal". Mặc định KHÔNG dùng
+# (để giữ recall cao: VLM chỉ gán loại lỗi, không loại bỏ thanh).
+NORMAL_OVERRIDE = """
+
+### OVERRIDE — FALSE-POSITIVE FILTERING IS ENABLED
+The geometry system is sensitive and CAN produce false positives. In addition to the defect
+types above, you may ALSO return "normal" when, after careful inspection, the bar actually looks
+healthy: a straight horizontal line, both wings intact and not deformed, no crack and no missing
+piece. Do NOT force a defect label just because the bar was flagged — trust what you see in the
+image. The "defect_type" field may therefore also take the value "normal".
+"""
+

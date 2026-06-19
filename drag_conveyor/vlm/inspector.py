@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from .prompt import SYSTEM_PROMPT
+from .prompt import NORMAL_OVERRIDE, SYSTEM_PROMPT
 from .schema import DefectReason, make_openai_llm
 
 LOGGER = logging.getLogger(__name__)
@@ -150,21 +150,23 @@ def _parse(raw: str) -> list[DefectReason]:
 
 
 class VlmInspector:
-    def __init__(self, api_key: str, model: str = _DEFAULT_MODEL) -> None:
+    def __init__(self, api_key: str, model: str = _DEFAULT_MODEL, *, can_mark_normal: bool = False) -> None:
         self._api_key = api_key
         self._model = model
+        self._can_mark_normal = can_mark_normal
         self.request_count = 0
 
     @classmethod
-    def from_env(cls, model: str = _DEFAULT_MODEL) -> "VlmInspector":
+    def from_env(cls, model: str = _DEFAULT_MODEL, *, can_mark_normal: bool = False) -> "VlmInspector":
         key = os.environ.get("OPENAI_API_KEY", "").strip()
         if not key:
             raise RuntimeError("OPENAI_API_KEY env var is not set")
-        return cls(api_key=key, model=model)
+        return cls(api_key=key, model=model, can_mark_normal=can_mark_normal)
 
     @classmethod
     def from_profile(cls, profile) -> "VlmInspector":
-        return cls.from_env(model=profile.inspection.vlm.model)
+        vlm = profile.inspection.vlm
+        return cls.from_env(model=vlm.model, can_mark_normal=vlm.can_mark_normal)
 
     def inspect(self, bars: list) -> dict[str, DefectReason]:
         """Classify all defective bars in a single request. Returns {bar_id: DefectReason}."""
@@ -181,10 +183,12 @@ class VlmInspector:
         for bar in bars:
             content.append(_encode(bar.bar_id, bar.crop_image))
 
+        system_prompt = SYSTEM_PROMPT + (NORMAL_OVERRIDE if self._can_mark_normal else "")
+
         self.request_count = 1
         try:
             response = llm.invoke([
-                SystemMessage(content=SYSTEM_PROMPT),
+                SystemMessage(content=system_prompt),
                 HumanMessage(content=content),
             ])
             raw = response.content  # type: ignore[union-attr]

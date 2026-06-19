@@ -75,7 +75,9 @@
     "mode": "auto_baseline",
     "defect_policy": {
       "min_violated_dimensions": 1,
-      "score_dimension_count": 2
+      "score_dimension_count": 2,
+      "deadband_ratio": 0.0,
+      "deadband_floor": 0.0
     },
     "auto_baseline": {
       "rules_version": "geometry_v1",
@@ -104,7 +106,8 @@
       "length_max_ratio": 1.1
     },
     "vlm": {
-      "model": "gpt-5.4"
+      "model": "gpt-5.4",
+      "can_mark_normal": false
     }
   }
 }

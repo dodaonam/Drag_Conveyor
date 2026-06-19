@@ -220,7 +220,8 @@ class ProfileRulesTests(unittest.TestCase):
         self.assertEqual(length_short.reasons, ["length_too_short"])
         self.assertEqual(length_short.score, 0.5)
 
-        both = engine.evaluate({"length": 120.0, "width": 25.0}, rules, policy, calibration)
+        # length_max = p99(110) * 1.15 = 126.5 (+1.0 deadband); width_max = p98(23) (+1.0 deadband)
+        both = engine.evaluate({"length": 130.0, "width": 25.0}, rules, policy, calibration)
         self.assertCountEqual(both.reasons, ["length_too_long", "width_too_large"])
         self.assertEqual(both.score, 1.0)
 
@@ -247,15 +248,16 @@ class ProfileRulesTests(unittest.TestCase):
             width_upper_percentile="p98",
         )
 
+        # length_min = p2(91); length_max = p98(109) * 1.15 = 125.35; deadband floor = 1.0
         normal = engine.evaluate({"length": 92.0, "width": 18.0}, rules, policy, calibration)
-        short = engine.evaluate({"length": 90.5, "width": 18.0}, rules, policy, calibration)
-        long = engine.evaluate({"length": 115.0, "width": 18.0}, rules, policy, calibration)
+        short = engine.evaluate({"length": 85.0, "width": 18.0}, rules, policy, calibration)
+        long = engine.evaluate({"length": 130.0, "width": 18.0}, rules, policy, calibration)
 
         self.assertEqual(normal.result, "normal")
         self.assertEqual(short.reasons, ["length_too_short"])
         self.assertEqual(long.reasons, ["length_too_long"])
         self.assertEqual(normal.thresholds["length_min"], 91.0)
-        self.assertEqual(normal.thresholds["length_max"], 114.45)
+        self.assertEqual(normal.thresholds["length_max"], 125.35)
         with self.assertRaisesRegex(ValueError, "missing percentile: p10"):
             engine.evaluate(
                 {"length": 100.0, "width": 20.0},
@@ -263,6 +265,52 @@ class ProfileRulesTests(unittest.TestCase):
                 policy,
                 calibration,
             )
+
+    def test_rule_engine_deadband_suppresses_small_violations(self) -> None:
+        engine = RuleEngine()
+        profile = _base_profile()
+        rules = profile.inspection.auto_baseline
+        calibration = _calibration_result()
+        # Bật deadband tường minh để test cơ chế (mặc định base_profile để 0 = no-op).
+        policy = replace(
+            profile.inspection.defect_policy,
+            deadband_ratio=0.005,
+            deadband_floor=1.0,
+        )
+
+        # length_min = p2 = 91, deadband floor = 1.0 → chỉ flag khi length < 90.0
+        within = engine.evaluate({"length": 90.5, "width": 20.0}, rules, policy, calibration)
+        beyond = engine.evaluate({"length": 89.5, "width": 20.0}, rules, policy, calibration)
+        self.assertEqual(within.result, "normal")
+        self.assertEqual(within.reasons, [])
+        self.assertEqual(beyond.result, "suspected_defect")
+        self.assertEqual(beyond.reasons, ["length_too_short"])
+
+        # width_max = p98 = 23, deadband floor = 1.0 → chỉ flag khi width > 24.0
+        width_within = engine.evaluate({"length": 100.0, "width": 23.5}, rules, policy, calibration)
+        width_beyond = engine.evaluate({"length": 100.0, "width": 24.5}, rules, policy, calibration)
+        self.assertEqual(width_within.result, "normal")
+        self.assertEqual(width_beyond.reasons, ["width_too_large"])
+
+        # Tolerance được expose trong thresholds để phục vụ tinh chỉnh
+        self.assertEqual(within.thresholds["length_min_tol"], 1.0)
+        self.assertEqual(within.thresholds["width_max_tol"], 1.0)
+
+    def test_base_profile_defaults_preserve_recall(self) -> None:
+        profile = _base_profile()
+        policy = profile.inspection.defect_policy
+        # Deadband mặc định = 0 → không nới ngưỡng, giữ độ nhạy gốc của rule.
+        self.assertEqual(policy.deadband_ratio, 0.0)
+        self.assertEqual(policy.deadband_floor, 0.0)
+        # VLM mặc định KHÔNG được lật về normal → không cướp recall.
+        self.assertIsNotNone(profile.inspection.vlm)
+        self.assertFalse(profile.inspection.vlm.can_mark_normal)
+        # Với deadband 0, tolerance = 0 (ngưỡng quyết định == ngưỡng thô).
+        engine = RuleEngine()
+        calibration = _calibration_result()
+        ev = engine.evaluate({"length": 100.0, "width": 20.0}, profile.inspection.auto_baseline, policy, calibration)
+        self.assertEqual(ev.thresholds["length_min_tol"], 0.0)
+        self.assertEqual(ev.thresholds["width_max_tol"], 0.0)
 
     def test_calibration_updates_profile_without_mutating_rule_schema(self) -> None:
         profile = _base_profile()
