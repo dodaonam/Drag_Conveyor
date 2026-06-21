@@ -81,10 +81,10 @@
     },
     "auto_baseline": {
       "rules_version": "geometry_v1",
-      "length_lower_percentile": "p2",
+      "length_lower_percentile": "p5",
       "length_upper_percentile": "p99",
       "width_lower_percentile": "p1",
-      "width_upper_percentile": "p98",
+      "width_upper_percentile": "p95",
       "length_lower_margin": 0.0,
       "length_upper_margin": 0.15,
       "width_lower_margin": 0.15,
@@ -107,7 +107,7 @@
     },
     "vlm": {
       "model": "gpt-5.4",
-      "can_mark_normal": false
+      "can_mark_normal": true
     }
   }
 }

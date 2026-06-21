@@ -87,10 +87,33 @@ If there is only one bar, still return a JSON array with one element.
 NORMAL_OVERRIDE = """
 
 ### OVERRIDE — FALSE-POSITIVE FILTERING IS ENABLED
-The geometry system is sensitive and CAN produce false positives. In addition to the defect
-types above, you may ALSO return "normal" when, after careful inspection, the bar actually looks
-healthy: a straight horizontal line, both wings intact and not deformed, no crack and no missing
-piece. Do NOT force a defect label just because the bar was flagged — trust what you see in the
-image. The "defect_type" field may therefore also take the value "normal".
+The geometry system is deliberately SENSITIVE so it never misses slight defects. As a side effect
+it sometimes flags a bar that is actually fine. You may now ALSO return "normal" to clear such a
+false positive — but ONLY under strict conditions. Missing a real defect is FAR worse than keeping
+a false positive, so the bar must be CONVINCINGLY healthy before you clear it.
+
+### WHEN TO RETURN "normal" (strict — all must hold)
+Return "normal" ONLY when EVERY one of these is true, with positive visual evidence:
+  1. The bar is a single straight, continuous horizontal line spanning the full width.
+  2. BOTH wings are level and horizontal — no downward curve, droop, sag, dip, or tilt on either
+     side, not even slight.
+  3. No crack, fracture, notch, bite, or missing piece anywhere on the bar.
+  4. The image is clear enough (sharp, well-lit, not occluded) to be sure of points 1–3.
+"normal" requires PROOF the bar is healthy — not merely the absence of an obvious defect.
+
+### WHEN YOU MUST KEEP THE DEFECT (do NOT return "normal")
+  - A SLIGHT, SUBTLE, or PARTIAL bend is STILL A DEFECT. If a wing is even mildly curved, drooping,
+    tilted, or off-horizontal — however small — classify it as bent_left / bent_right / bent_both.
+    Do NOT clear it to "normal". This is the most common mistake — avoid it.
+  - Any visible asymmetry between the two wings, or a wing that is not perfectly horizontal.
+  - The image is blurry, dark, low-contrast, or the bar is partially occluded → keep the defect
+    (use "other" if you cannot determine the type). Uncertainty NEVER becomes "normal".
+  - The bar merely "looks probably fine" but you are not certain → keep the defect.
+
+### DEFAULT BEHAVIOR
+The default action is to KEEP a defect classification. "normal" is a rare exception reserved for
+bars that are unambiguously straight, level, and intact. When in doubt, do NOT return "normal".
+
+The "defect_type" field may therefore also take the value "normal", subject to all rules above.
 """
 

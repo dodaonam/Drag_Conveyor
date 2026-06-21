@@ -188,7 +188,14 @@ class ProfileRulesTests(unittest.TestCase):
             profile_from_dict(raw_with_string_class_ids)
 
     def test_frontend_trigger_preview_matches_runtime_contract(self) -> None:
-        html = (ROOT / "server" / "static" / "index.html").read_text(encoding="utf-8")
+        static_dir = ROOT / "server" / "static"
+        # Frontend was split into markup (index.html) + logic (app.js); the
+        # runtime-config contract now lives in app.js, so check both sources.
+        html = (
+            (static_dir / "index.html").read_text(encoding="utf-8")
+            + "\n"
+            + (static_dir / "app.js").read_text(encoding="utf-8")
+        )
         raw = _base_profile_dict()
 
         self.assertEqual(raw["collection"]["trigger_band"]["position_ratio"], 0.5)
@@ -269,8 +276,15 @@ class ProfileRulesTests(unittest.TestCase):
     def test_rule_engine_deadband_suppresses_small_violations(self) -> None:
         engine = RuleEngine()
         profile = _base_profile()
-        rules = profile.inspection.auto_baseline
         calibration = _calibration_result()
+        # Cố định percentile để test độc lập với cấu hình base_profile.
+        rules = replace(
+            profile.inspection.auto_baseline,
+            length_lower_percentile="p2",
+            length_upper_percentile="p99",
+            width_lower_percentile="p1",
+            width_upper_percentile="p98",
+        )
         # Bật deadband tường minh để test cơ chế (mặc định base_profile để 0 = no-op).
         policy = replace(
             profile.inspection.defect_policy,
@@ -296,19 +310,23 @@ class ProfileRulesTests(unittest.TestCase):
         self.assertEqual(within.thresholds["length_min_tol"], 1.0)
         self.assertEqual(within.thresholds["width_max_tol"], 1.0)
 
-    def test_base_profile_defaults_preserve_recall(self) -> None:
+    def test_base_profile_uses_sensitive_rule_with_vlm_filter(self) -> None:
         profile = _base_profile()
         policy = profile.inspection.defect_policy
-        # Deadband mặc định = 0 → không nới ngưỡng, giữ độ nhạy gốc của rule.
+        auto = profile.inspection.auto_baseline
+        # Rule nhạy hơn ở "chữ ký" cong: bắt thanh hơi ngắn (p5) và hơi rộng (p95).
+        self.assertEqual(auto.length_lower_percentile, "p5")
+        self.assertEqual(auto.width_upper_percentile, "p95")
+        # Deadband vẫn 0 (không nén tín hiệu cong nhẹ); VLM là bộ lọc false positive.
         self.assertEqual(policy.deadband_ratio, 0.0)
         self.assertEqual(policy.deadband_floor, 0.0)
-        # VLM mặc định KHÔNG được lật về normal → không cướp recall.
+        # can_mark_normal là núm vận hành (bật/tắt bộ lọc VLM) — chỉ kiểm tra parse được.
         self.assertIsNotNone(profile.inspection.vlm)
-        self.assertFalse(profile.inspection.vlm.can_mark_normal)
+        self.assertTrue(profile.inspection.vlm.can_mark_normal)
         # Với deadband 0, tolerance = 0 (ngưỡng quyết định == ngưỡng thô).
         engine = RuleEngine()
         calibration = _calibration_result()
-        ev = engine.evaluate({"length": 100.0, "width": 20.0}, profile.inspection.auto_baseline, policy, calibration)
+        ev = engine.evaluate({"length": 100.0, "width": 20.0}, auto, policy, calibration)
         self.assertEqual(ev.thresholds["length_min_tol"], 0.0)
         self.assertEqual(ev.thresholds["width_max_tol"], 0.0)
 

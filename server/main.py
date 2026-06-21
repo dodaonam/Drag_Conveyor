@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from path_bootstrap import ensure_repo_root_on_path
@@ -39,6 +40,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Drag Conveyor Inspection Server", lifespan=lifespan)
+
+# ── Static assets (frontend CSS/JS) ─────────────────────────────────────────────
+_STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
