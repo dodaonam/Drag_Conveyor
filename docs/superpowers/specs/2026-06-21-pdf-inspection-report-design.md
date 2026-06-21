@@ -62,8 +62,8 @@ Server chạy trong **WSL** trên máy Windows, phơi ra ngoài qua cloudflared 
   "inspector_name": "Trần Văn Trường",
   "conveyor_name": "M515A",
   "corrections": [
-    { "bar_id": "<id>", "defect_type": "bent_left" },  // 4 loại hợp lệ
-    { "bar_id": "<id>", "defect_type": "normal" }       // hạ về bình thường
+    { "track_id": 12, "defect_type": "bent_left" },  // 4 loại hợp lệ
+    { "track_id": 27, "defect_type": "normal" }        // hạ về bình thường
   ]
 }
 // 200
@@ -72,9 +72,9 @@ Server chạy trong **WSL** trên máy Windows, phơi ra ngoài qua cloudflared 
 // 409 nếu job chưa completed; 404 nếu không có job
 ```
 
-- `bar_id` đối chiếu với defects ∪ normals trong summary đã lưu (normals đã có `bar_id`).
+- **Định danh thanh: `track_id`** (integer) — có ở MỌI thanh trong summary (cả defects lẫn normals), trong khi `bar_id` chỉ chắc chắn có ở defects. Client gửi `track_id` thống nhất cho cả hai (thay vì prefix `d:`/`n:` như UI hiện tại).
 - `defect_type` hợp lệ: `bent_left | bent_right | bent_both | broken | normal`.
-- Áp corrections: thanh `normal` → loại khỏi tập lỗi; thanh đổi loại → cập nhật; thanh không có trong corrections → giữ nguyên trạng thái trong summary.
+- Áp corrections: server đối chiếu `track_id` với defects ∪ normals trong summary đã lưu. Thanh `normal` → loại khỏi tập lỗi; thanh đổi loại → cập nhật; thanh không có trong corrections → giữ nguyên trạng thái trong summary.
 
 ## 6. Template PDF (bám mẫu XT-100)
 
@@ -102,7 +102,7 @@ Server chạy trong **WSL** trên máy Windows, phơi ra ngoài qua cloudflared 
 
 - Nút **"Lưu kết quả"** ở màn kết quả.
 - Bấm → kiểm tra `G.allDefects` còn `other`/`_unclassified` → nếu có: chặn, highlight, báo "Hãy phân loại hết các thanh chưa rõ".
-- Hợp lệ → gom `corrections` (trạng thái cuối của mọi thanh defect + normal đã đổi) → POST → hiện "Đã lưu: <filename>" hoặc lỗi.
+- Hợp lệ → gom `corrections` = trạng thái cuối (`defect_type`) của **tất cả** thanh đã review, định danh bằng `track_id` → POST → hiện "Đã lưu: <filename>" hoặc lỗi.
 - Trạng thái nút: đang lưu (spinner) / xong / lỗi.
 
 ## 9. Xử lý lỗi & ca biên
