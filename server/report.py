@@ -100,7 +100,7 @@ def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | N
     def esc(s: object) -> str:
         return _html.escape(str(s))
 
-    logo = f'<img src="{logo_data_uri}" style="height:40px">' if logo_data_uri else ""
+    logo = f'<img src="{esc(logo_data_uri)}" style="height:40px">' if logo_data_uri else ""
     sections = []
     for dtype in ALLOWED_DEFECT_TYPES:
         bars = report_data["defects_by_type"].get(dtype, [])
