@@ -35,3 +35,7 @@ PRESIGNED_GET_EXPIRES: int = int(os.environ.get("PRESIGNED_GET_EXPIRES_SECONDS",
 DELETE_VIDEO_AFTER_SUCCESS: bool = (
     os.environ.get("DELETE_VIDEO_AFTER_SUCCESS", "true").strip().lower() == "true"
 )
+
+REPORTS_DIR = Path(
+    os.environ.get("REPORTS_DIR", str(_SERVER_DIR / "runtime" / "reports"))
+).resolve()
