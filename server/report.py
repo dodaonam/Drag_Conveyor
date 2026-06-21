@@ -4,6 +4,7 @@ import html as _html
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 _TZ_ICT = timezone(timedelta(hours=7))
 _REPORT_CSS = (Path(__file__).parent / "report.css").read_text(encoding="utf-8")
@@ -138,3 +139,41 @@ def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | N
   </div>
   {body_sections}
 </body></html>"""
+
+
+def render_pdf(html: str) -> bytes:
+    from weasyprint import HTML  # lazy: avoid import cost / system-lib requirement at module load
+    return HTML(string=html).write_pdf()
+
+
+def _image_data_uri(data: bytes) -> str:
+    import base64
+    return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
+
+
+def save_report(summary, corrections, meta, job_id, created_at_iso, reports_dir,
+                fetch_image: "Callable[[str], bytes | None]") -> str:
+    report_data = build_report_data(summary, corrections)
+
+    images_by_track: dict[int, str | None] = {}
+    for bars in report_data["defects_by_type"].values():
+        for bar in bars:
+            key = bar.get("snapshot_key")
+            data = fetch_image(key) if key else None
+            images_by_track[int(bar["track_id"])] = _image_data_uri(data) if data else None
+
+    html = build_html(report_data, meta, images_by_track)
+    pdf_bytes = render_pdf(html)
+
+    reports_dir = Path(reports_dir)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    base = report_filename(meta["conveyor_name"], created_at_iso, job_id)
+    target = reports_dir / base
+    if target.exists():
+        stem, suffix = base[:-4], ".pdf"
+        i = 2
+        while (reports_dir / f"{stem}_{i}{suffix}").exists():
+            i += 1
+        target = reports_dir / f"{stem}_{i}{suffix}"
+    target.write_bytes(pdf_bytes)
+    return target.name
