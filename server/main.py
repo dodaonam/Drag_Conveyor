@@ -323,7 +323,7 @@ def save_report(job_id: str, body: ReportIn) -> dict[str, Any]:
     key_prefix = f"results/{job_id}/"
 
     def fetch_image(snapshot_key: str) -> bytes | None:
-        if not snapshot_key or not snapshot_key.startswith(key_prefix):
+        if not snapshot_key or ".." in snapshot_key or not snapshot_key.startswith(key_prefix):
             return None
         try:
             return r2.download_bytes(snapshot_key)
