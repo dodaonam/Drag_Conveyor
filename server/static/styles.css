@@ -808,3 +808,7 @@ select:focus {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
+
+.btn-success:disabled { opacity: .6; }
+.save-msg { margin-top: 8px; font-size: 13px; color: #166534; }
+.save-msg.err { color: #b91c1c; }

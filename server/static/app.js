@@ -733,6 +733,54 @@ function applyCorrection(key, newType) {
   _renderNormals();
 }
 
+const VALID_DEFECT_TYPES = ['bent_left', 'bent_right', 'bent_both', 'broken'];
+
+function collectCorrections() {
+  const out = [];
+  for (const d of G.allDefects) out.push({ track_id: d.track_id, defect_type: d.defect_type });
+  for (const n of G.allNormals) out.push({ track_id: n.track_id, defect_type: 'normal' });
+  return out;
+}
+
+function hasUnclassified() {
+  return G.allDefects.some(d => !VALID_DEFECT_TYPES.includes(d.defect_type));
+}
+
+function setSaveMsg(text, isErr) {
+  const el = document.getElementById('msg-save');
+  el.style.display = 'block';
+  el.textContent = text;
+  el.classList.toggle('err', !!isErr);
+}
+
+async function saveReport() {
+  if (hasUnclassified()) {
+    setSaveMsg('Còn thanh chưa phân loại — hãy phân loại hết (trái/phải/2 bên/gãy) hoặc đánh dấu bình thường trước khi lưu.', true);
+    return;
+  }
+  const btn = document.getElementById('btn-save-report');
+  btn.disabled = true;
+  btn.textContent = 'Đang lưu...';
+  try {
+    const res = await api('/api/jobs/' + G.jobId + '/report', {
+      method: 'POST',
+      body: JSON.stringify({
+        inspector_name: G.inspector,
+        conveyor_name: G.conveyor,
+        corrections: collectCorrections(),
+      }),
+    });
+    btn.textContent = 'Đã lưu ✓';
+    setSaveMsg('Đã lưu: ' + res.filename, false);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Lưu kết quả';
+    setSaveMsg('Lỗi khi lưu: ' + e.message, true);
+  }
+}
+
+document.getElementById('btn-save-report').addEventListener('click', saveReport);
+
 function switchTab(tab) {
   G.activeTab = tab;
   ['defect', 'normal'].forEach(t => {
