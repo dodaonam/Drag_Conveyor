@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import html as _html
 import re
 from datetime import datetime, timedelta, timezone
@@ -7,7 +8,11 @@ from pathlib import Path
 from typing import Callable
 
 _TZ_ICT = timezone(timedelta(hours=7))
-_REPORT_CSS = (Path(__file__).parent / "report.css").read_text(encoding="utf-8")
+
+
+@functools.lru_cache(maxsize=1)
+def _report_css() -> str:
+    return (Path(__file__).parent / "report.css").read_text(encoding="utf-8")
 
 _SECTION_LABELS = {
     "bent_left": "Biến dạng bên trái",
@@ -119,7 +124,7 @@ def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | N
         )
     body_sections = "".join(sections) or '<div class="none">Không phát hiện cánh lỗi</div>'
 
-    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_REPORT_CSS}</style></head>
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_report_css()}</style></head>
 <body>
   <div class="hdr">
     <div>{logo}<div class="company">{esc(_COMPANY)}</div><div class="branch">{esc(_BRANCH)}</div></div>
