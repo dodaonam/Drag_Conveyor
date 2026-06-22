@@ -23,6 +23,7 @@ ensure_repo_root_on_path()
 
 import db
 import r2
+import report
 import settings
 import worker
 from drag_conveyor.config import Profile, load_profile
@@ -149,6 +150,19 @@ class StatusOut(BaseModel):
     status: str
     message: str
     updated_at: str
+
+
+class CorrectionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    track_id: int
+    defect_type: str
+
+
+class ReportIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    inspector_name: str
+    conveyor_name: str
+    corrections: list[CorrectionIn]
 
 
 # ── GET / (frontend) ──────────────────────────────────────────────────────────
@@ -293,3 +307,48 @@ def get_result(job_id: str) -> dict[str, Any]:
 
     summary["job_id"] = job_id
     return summary
+
+
+# ── POST /api/jobs/{job_id}/report ────────────────────────────────────────────
+
+@app.post("/api/jobs/{job_id}/report", dependencies=[Depends(require_auth)])
+def save_report(job_id: str, body: ReportIn) -> dict[str, Any]:
+    row = db.get_job(job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if row["status"] != "completed":
+        raise HTTPException(status_code=409, detail=f"Job not completed: {row['status']}")
+
+    summary = json.loads(row["result_summary_json"])
+    key_prefix = f"results/{job_id}/"
+
+    def fetch_image(snapshot_key: str) -> bytes | None:
+        if not snapshot_key or not snapshot_key.startswith(key_prefix):
+            return None
+        try:
+            return r2.download_bytes(snapshot_key)
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning("report image fetch failed for %s: %s", snapshot_key, exc)
+            return None
+
+    meta = {
+        "inspector_name": body.inspector_name,
+        "conveyor_name": body.conveyor_name,
+        "datetime_str": report.format_ict(row["created_at"]),
+    }
+    try:
+        filename = report.save_report(
+            summary=summary,
+            corrections=[c.model_dump() for c in body.corrections],
+            meta=meta,
+            job_id=job_id,
+            created_at_iso=row["created_at"],
+            reports_dir=settings.REPORTS_DIR,
+            fetch_image=fetch_image,
+        )
+    except report.ReportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot write report: {exc}") from exc
+
+    return {"filename": filename, "saved": True}
