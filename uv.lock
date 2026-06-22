@@ -326,12 +326,12 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "weasyprint" },
 ]
 
 [package.optional-dependencies]
 gui = [
     { name = "qrcode" },
-    { name = "weasyprint" },
 ]
 
 [package.metadata]
@@ -346,7 +346,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "qrcode", marker = "extra == 'gui'", specifier = ">=8.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
-    { name = "weasyprint", marker = "extra == 'gui'", specifier = ">=62.0" },
+    { name = "weasyprint", specifier = ">=62.0" },
 ]
 provides-extras = ["gui"]
 
