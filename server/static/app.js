@@ -409,20 +409,26 @@ function redraw() {
 
 function drawRoiHandles() {
   const x1 = G.roi.x, y1 = G.roi.y, x2 = G.roi.x + G.roi.w, y2 = G.roi.y + G.roi.h;
-  const points = [
-    [x1, y1], [x2, y1], [x1, y2], [x2, y2],
+  const corners = [[x1, y1], [x2, y1], [x1, y2], [x2, y2]];
+  const edges = [
     [(x1 + x2) / 2, y1], [(x1 + x2) / 2, y2],
     [x1, (y1 + y2) / 2], [x2, (y1 + y2) / 2],
   ];
-  ctx.fillStyle = '#16a34a';
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 2;
-  for (const [x, y] of points) {
-    ctx.beginPath();
-    ctx.rect(x - 5, y - 5, 10, 10);
-    ctx.fill();
-    ctx.stroke();
-  }
+  // Small white squares with green outline so the exact corner stays visible
+  // and the handles cover as little of the image as possible.
+  const draw = (pts, half) => {
+    for (const [x, y] of pts) {
+      ctx.beginPath();
+      ctx.rect(x - half, y - half, half * 2, half * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#16a34a';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  };
+  draw(corners, 3.5);
+  draw(edges, 3);
 }
 
 /* ══════════════════════════════════════════════════════════════════

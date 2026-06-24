@@ -1,0 +1,154 @@
+1c7d182 feat: add Lưu kết quả button + report save flow (frontend)
+ server/static/app.js                   | 48 ++++++++++++++++++++++++++++++++++
+ server/static/index.html               |  2 ++
+ server/static/styles.css               |  4 +++
+ tests/test_report_frontend_contract.py | 23 ++++++++++++++++
+ 4 files changed, 77 insertions(+)
+diff --git a/server/static/app.js b/server/static/app.js
+index c571867..9944a6f 100644
+--- a/server/static/app.js
++++ b/server/static/app.js
+@@ -726,20 +726,68 @@ function applyCorrection(key, newType) {
+     statBox(G.allDefects.length + G.allNormals.length, 'Tổng thanh', '') +
+     statBox(defectCount, 'Thanh lỗi', defectCount > 0 ? 'bad' : 'ok');
+   _initDefectSubtabs();
+   const activeKey = G.activeDefectSubtab && _filterBySubtab(G.allDefects, G.activeDefectSubtab).length > 0
+     ? G.activeDefectSubtab
+     : (DEFECT_LABEL_KEYS.find(k => _filterBySubtab(G.allDefects, k).length > 0) || DEFECT_LABEL_KEYS[0]);
+   switchDefectSubtab(activeKey);
+   _renderNormals();
+ }
+ 
++const VALID_DEFECT_TYPES = ['bent_left', 'bent_right', 'bent_both', 'broken'];
++
++function collectCorrections() {
++  const out = [];
++  for (const d of G.allDefects) out.push({ track_id: d.track_id, defect_type: d.defect_type });
++  for (const n of G.allNormals) out.push({ track_id: n.track_id, defect_type: 'normal' });
++  return out;
++}
++
++function hasUnclassified() {
++  return G.allDefects.some(d => !VALID_DEFECT_TYPES.includes(d.defect_type));
++}
++
++function setSaveMsg(text, isErr) {
++  const el = document.getElementById('msg-save');
++  el.style.display = 'block';
++  el.textContent = text;
++  el.classList.toggle('err', !!isErr);
++}
++
++async function saveReport() {
++  if (hasUnclassified()) {
++    setSaveMsg('Còn thanh chưa phân loại — hãy phân loại hết (trái/phải/2 bên/gãy) hoặc đánh dấu bình thường trước khi lưu.', true);
++    return;
++  }
++  const btn = document.getElementById('btn-save-report');
++  btn.disabled = true;
++  btn.textContent = 'Đang lưu...';
++  try {
++    const res = await api('/api/jobs/' + G.jobId + '/report', {
++      method: 'POST',
++      body: JSON.stringify({
++        inspector_name: G.inspector,
++        conveyor_name: G.conveyor,
++        corrections: collectCorrections(),
++      }),
++    });
++    btn.textContent = 'Đã lưu ✓';
++    setSaveMsg('Đã lưu: ' + res.filename, false);
++  } catch (e) {
++    btn.disabled = false;
++    btn.textContent = 'Lưu kết quả';
++    setSaveMsg('Lỗi khi lưu: ' + e.message, true);
++  }
++}
++
++document.getElementById('btn-save-report').addEventListener('click', saveReport);
++
+ function switchTab(tab) {
+   G.activeTab = tab;
+   ['defect', 'normal'].forEach(t => {
+     document.getElementById('tab-btn-' + t).classList.toggle('active', t === tab);
+     document.getElementById('panel-' + t).style.display = t === tab ? '' : 'none';
+   });
+   G.normalLightboxItems = G.allNormals.filter(n => n.snapshot_url).map(n => ({
+     src: n.snapshot_url,
+     meta: `Track #${n.track_id} · Dài: ${(n.length || 0).toFixed(1)} · Rộng: ${(n.width || 0).toFixed(1)}`,
+   }));
+diff --git a/server/static/index.html b/server/static/index.html
+index 3381d43..b8a1f02 100644
+--- a/server/static/index.html
++++ b/server/static/index.html
+@@ -153,20 +153,22 @@
+             <div class="stat-grid" id="stat-grid"></div>
+           </div>
+ 
+           <!-- No defects -->
+           <div id="no-defect" class="card ok-banner" style="display:none">
+             <div class="icon">✅</div>
+             <h2>Không phát hiện lỗi</h2>
+             <p>Tất cả thanh đều đạt tiêu chuẩn</p>
+           </div>
+ 
++          <button class="btn btn-success" id="btn-save-report">Lưu kết quả</button>
++          <div id="msg-save" class="save-msg" style="display:none"></div>
+           <button class="btn btn-primary" id="btn-new-job">Kiểm tra tiếp</button>
+         </div>
+ 
+         <div class="result-main">
+           <!-- Gallery tabs -->
+           <div id="gallery-tabs" style="display:none">
+             <div class="tab-bar">
+               <button class="tab-btn" id="tab-btn-defect" onclick="switchTab('defect')">
+                 Thanh lỗi (<span id="tab-count-defect">0</span>)
+               </button>
+diff --git a/server/static/styles.css b/server/static/styles.css
+index b0edc0e..9a2922c 100644
+--- a/server/static/styles.css
++++ b/server/static/styles.css
+@@ -801,10 +801,14 @@ select:focus {
+   .tab-btn {
+     font-size: 15px;
+   }
+ }
+ 
+ @media (min-width: 1200px) {
+   .defects {
+     grid-template-columns: repeat(3, minmax(0, 1fr));
+   }
+ }
++
++.btn-success:disabled { opacity: .6; }
++.save-msg { margin-top: 8px; font-size: 13px; color: #166534; }
++.save-msg.err { color: #b91c1c; }
+diff --git a/tests/test_report_frontend_contract.py b/tests/test_report_frontend_contract.py
+new file mode 100644
+index 0000000..a690e27
+--- /dev/null
++++ b/tests/test_report_frontend_contract.py
+@@ -0,0 +1,23 @@
++from __future__ import annotations
++
++import unittest
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++STATIC = ROOT / "server" / "static"
++
++
++class ReportFrontendContractTests(unittest.TestCase):
++    def test_index_has_save_button(self) -> None:
++        html = (STATIC / "index.html").read_text(encoding="utf-8")
++        self.assertIn('id="btn-save-report"', html)
++
++    def test_appjs_posts_to_report_endpoint(self) -> None:
++        js = (STATIC / "app.js").read_text(encoding="utf-8")
++        self.assertIn("/report", js)
++        self.assertIn("collectCorrections", js)
++        self.assertIn("saveReport", js)
++
++
++if __name__ == "__main__":
++    unittest.main()

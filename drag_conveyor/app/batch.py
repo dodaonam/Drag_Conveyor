@@ -515,15 +515,23 @@ def _make_vlm_crop(frame: np.ndarray, roi_config) -> np.ndarray:
     ].copy()
 
 
+def _line_thickness(image: np.ndarray) -> int:
+    """Scale annotation line width to the frame size so boxes stay visible
+    on high-resolution snapshots instead of rendering as a faint 1px line."""
+    h, w = image.shape[:2]
+    return max(2, round(min(h, w) / 400))
+
+
 def _save_box_contour_snapshot(
     frame: np.ndarray,
     bar: BarResult,
     snapshots_dir: Path,
 ) -> None:
     image = frame.copy()
-    cv2.drawContours(image, [bar.contour_frame.astype(np.int32)], -1, (0, 255, 0), 1)
+    thickness = _line_thickness(image)
+    cv2.drawContours(image, [bar.contour_frame.astype(np.int32)], -1, (0, 255, 0), thickness)
     x1, y1, x2, y2 = (int(v) for v in bar.bbox_frame_xyxy)
-    cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+    cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), thickness)
     output = snapshots_dir / f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
     try:
         cv2.imwrite(str(output), image)
@@ -554,7 +562,7 @@ def _save_contour_snapshot(
 ) -> None:
     image = frame.copy()
     contour = bar.contour_frame.astype(np.int32)
-    cv2.drawContours(image, [contour], -1, (0, 255, 0), 1)
+    cv2.drawContours(image, [contour], -1, (0, 255, 0), _line_thickness(image))
     output = snapshots_dir / f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
     try:
         cv2.imwrite(str(output), image)

@@ -1,0 +1,112 @@
+9fbdde2 feat: add REPORTS_DIR setting and r2.download_bytes
+ server/r2.py               |  5 +++++
+ server/settings.py         |  4 ++++
+ tests/test_report_infra.py | 55 ++++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 64 insertions(+)
+diff --git a/server/r2.py b/server/r2.py
+index ff21a75..6de5405 100644
+--- a/server/r2.py
++++ b/server/r2.py
+@@ -57,17 +57,22 @@ def object_exists(object_key: str) -> bool:
+ 
+ def delete_object(object_key: str) -> None:
+     _client().delete_object(Bucket=settings.R2_BUCKET_NAME, Key=object_key)
+ 
+ 
+ def download_file(object_key: str, dest: Path) -> None:
+     dest.parent.mkdir(parents=True, exist_ok=True)
+     _client().download_file(settings.R2_BUCKET_NAME, object_key, str(dest))
+ 
+ 
++def download_bytes(object_key: str) -> bytes:
++    resp = _client().get_object(Bucket=settings.R2_BUCKET_NAME, Key=object_key)
++    return resp["Body"].read()
++
++
+ def upload_file(local_path: Path, object_key: str, content_type: str = "application/octet-stream") -> None:
+     _client().upload_file(
+         str(local_path),
+         settings.R2_BUCKET_NAME,
+         object_key,
+         ExtraArgs={"ContentType": content_type},
+     )
+diff --git a/server/settings.py b/server/settings.py
+index 7ebc7d3..1dfba78 100644
+--- a/server/settings.py
++++ b/server/settings.py
+@@ -28,10 +28,14 @@ BASE_PROFILE_PATH = (_SERVER_DIR / os.environ.get("BASE_PROFILE_PATH", "../confi
+ TEMP_DIR = (_SERVER_DIR / os.environ.get("TEMP_DIR", "runtime/temp")).resolve()
+ 
+ MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 209_715_200))
+ MAX_JOB_DURATION_SECONDS: int = int(os.environ.get("MAX_JOB_DURATION_SECONDS", 900))
+ UPLOAD_EXPIRE_SECONDS: int = int(os.environ.get("UPLOAD_EXPIRE_SECONDS", 1800))
+ PRESIGNED_PUT_EXPIRES: int = int(os.environ.get("PRESIGNED_PUT_EXPIRES_SECONDS", 1800))
+ PRESIGNED_GET_EXPIRES: int = int(os.environ.get("PRESIGNED_GET_EXPIRES_SECONDS", 3600))
+ DELETE_VIDEO_AFTER_SUCCESS: bool = (
+     os.environ.get("DELETE_VIDEO_AFTER_SUCCESS", "true").strip().lower() == "true"
+ )
++
++REPORTS_DIR = Path(
++    os.environ.get("REPORTS_DIR", str(_SERVER_DIR / "runtime" / "reports"))
++).resolve()
+diff --git a/tests/test_report_infra.py b/tests/test_report_infra.py
+new file mode 100644
+index 0000000..83381ae
+--- /dev/null
++++ b/tests/test_report_infra.py
+@@ -0,0 +1,55 @@
++from __future__ import annotations
++
++import importlib
++import os
++import sys
++import unittest
++from pathlib import Path
++from unittest import mock
++
++ROOT = Path(__file__).resolve().parents[1]
++SERVER_DIR = ROOT / "server"
++
++
++def _load(temp_dir: Path):
++    env = {
++        "R2_ENDPOINT_URL": "https://example.invalid",
++        "R2_ACCESS_KEY_ID": "k",
++        "R2_SECRET_ACCESS_KEY": "s",
++        "R2_BUCKET_NAME": "b",
++        "API_AUTH_TOKEN": "t",
++        "REPORTS_DIR": str(temp_dir / "reports"),
++    }
++    os.environ.update(env)
++    if str(SERVER_DIR) not in sys.path:
++        sys.path.insert(0, str(SERVER_DIR))
++    for name in ("settings", "r2"):
++        sys.modules.pop(name, None)
++    settings = importlib.import_module("settings")
++    r2 = importlib.import_module("r2")
++    return settings, r2
++
++
++class ReportInfraTests(unittest.TestCase):
++    def test_reports_dir_reads_env(self) -> None:
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            settings, _ = _load(Path(tmp))
++            self.assertEqual(settings.REPORTS_DIR, (Path(tmp) / "reports").resolve())
++
++    def test_download_bytes_reads_object_body(self) -> None:
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            _, r2 = _load(Path(tmp))
++            fake_body = mock.Mock()
++            fake_body.read.return_value = b"image-bytes"
++            fake_client = mock.Mock()
++            fake_client.get_object.return_value = {"Body": fake_body}
++            with mock.patch.object(r2, "_client", return_value=fake_client):
++                data = r2.download_bytes("results/job1/snapshots/defects/x.jpg")
++            self.assertEqual(data, b"image-bytes")
++            fake_client.get_object.assert_called_once()
++
++
++if __name__ == "__main__":
++    unittest.main()
