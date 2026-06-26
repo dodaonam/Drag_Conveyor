@@ -8,12 +8,15 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import qrcode
 
 _ROOT = Path(__file__).parent.parent
 CONFIG_PATH = _ROOT / "config" / "app_settings.json"
+# Must match settings.REPORTS_DIR default (server/runtime/reports) so the GUI
+# pre-fills the same path the server would use when nothing is configured.
+DEFAULT_REPORTS_DIR = str((_ROOT / "server" / "runtime" / "reports").resolve())
 _TUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 
 # (label, config_key, env_var, is_secret, required)
@@ -24,6 +27,7 @@ FIELDS: list[tuple[str, str, str, bool, bool]] = [
     ("R2 Bucket Name",        "r2_bucket_name",        "R2_BUCKET_NAME",        False, True),
     ("API Auth Token",        "api_auth_token",        "API_AUTH_TOKEN",        True,  True),
     ("OpenAI API Key",        "openai_api_key",        "OPENAI_API_KEY",        True,  False),
+    ("Reports Folder",        "reports_dir",           "REPORTS_DIR",           False, False),
 ]
 
 
@@ -57,9 +61,19 @@ class SetupApp(tk.Tk):
             )
             var = tk.StringVar()
             self._vars[key] = var
-            tk.Entry(
-                self, textvariable=var, show="*" if secret else "", width=44, font=("Segoe UI", 9)
-            ).grid(row=row, column=1, sticky="ew", **pad)
+            if key == "reports_dir":
+                cell = tk.Frame(self)
+                cell.grid(row=row, column=1, sticky="ew", **pad)
+                tk.Entry(
+                    cell, textvariable=var, width=36, font=("Segoe UI", 9)
+                ).pack(side="left", fill="x", expand=True)
+                tk.Button(
+                    cell, text="Browse…", command=lambda v=var: self._browse_dir(v)
+                ).pack(side="left", padx=(6, 0))
+            else:
+                tk.Entry(
+                    self, textvariable=var, show="*" if secret else "", width=44, font=("Segoe UI", 9)
+                ).grid(row=row, column=1, sticky="ew", **pad)
 
         sep_row = len(FIELDS) + 1
         tk.Frame(self, height=1, bg="#cccccc").grid(
@@ -92,14 +106,25 @@ class SetupApp(tk.Tk):
     # ── Config I/O ───────────────────────────────────────────────────────────
 
     def _load(self) -> None:
-        if not CONFIG_PATH.exists():
-            return
-        try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            for key, var in self._vars.items():
-                var.set(data.get(key, ""))
-        except Exception:
-            pass
+        data: dict[str, str] = {}
+        if CONFIG_PATH.exists():
+            try:
+                data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        for key, var in self._vars.items():
+            val = data.get(key, "")
+            if key == "reports_dir" and not val:
+                val = DEFAULT_REPORTS_DIR
+            var.set(val)
+
+    def _browse_dir(self, var: tk.StringVar) -> None:
+        initial = var.get().strip() or DEFAULT_REPORTS_DIR
+        chosen = filedialog.askdirectory(
+            initialdir=initial, title="Chọn thư mục lưu báo cáo", mustexist=False
+        )
+        if chosen:
+            var.set(chosen)
 
     def _collect(self) -> dict[str, str]:
         return {k: v.get().strip() for k, v in self._vars.items()}

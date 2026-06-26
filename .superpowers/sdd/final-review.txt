@@ -1,0 +1,978 @@
+1c7d182 feat: add Lưu kết quả button + report save flow (frontend)
+28529f1 fix: reject snapshot keys containing .. in report image fetch
+8b84df9 feat: add POST /api/jobs/{id}/report endpoint
+82112fe fix: make weasyprint a core dependency (server renders PDFs)
+bde06f3 feat: render report PDF with WeasyPrint and save to disk
+d77ba4e fix: escape logo data URI in report HTML
+cd45215 feat: add report filename + HTML/CSS builder
+bad20b9 feat: add report corrections/validation logic
+9fbdde2 feat: add REPORTS_DIR setting and r2.download_bytes
+ README.md                              |  10 ++
+ pyproject.toml                         |   1 +
+ server/main.py                         |  59 +++++++++++
+ server/r2.py                           |   5 +
+ server/report.css                      |  26 +++++
+ server/report.py                       | 179 +++++++++++++++++++++++++++++++++
+ server/settings.py                     |   4 +
+ server/static/app.js                   |  48 +++++++++
+ server/static/index.html               |   2 +
+ server/static/styles.css               |   4 +
+ tests/test_report_endpoint.py          |  95 +++++++++++++++++
+ tests/test_report_frontend_contract.py |  23 +++++
+ tests/test_report_html.py              |  60 +++++++++++
+ tests/test_report_infra.py             |  55 ++++++++++
+ tests/test_report_logic.py             |  67 ++++++++++++
+ tests/test_report_save.py              |  74 ++++++++++++++
+ 16 files changed, 712 insertions(+)
+diff --git a/README.md b/README.md
+index 419fb30..dba01a1 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,13 @@
+ Chạy web server để upload video và chọn ROI trực tiếp từ giao diện mobile/web.
+ 
+ ROI hiện luôn xử lý theo hướng băng chuyền từ trên xuống dưới; giao diện chỉ cho chọn vùng kiểm tra và trigger band.
++
++## Xuất phiếu PDF (WeasyPrint)
++
++Tính năng lưu phiếu kiểm tra PDF dùng WeasyPrint. Cài thư viện hệ thống một lần trong WSL:
++
++    sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0
++
++Đặt thư mục lưu phiếu trong `server/.env`:
++
++    REPORTS_DIR=/mnt/c/Users/<bạn>/KetQuaKiemTra
+diff --git a/pyproject.toml b/pyproject.toml
+index 6a7f165..23725a4 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -7,20 +7,21 @@ requires-python = ">=3.12"
+ dependencies = [
+     "boto3>=1.43.24",
+     "fastapi>=0.115.0",
+     "langchain-core>=0.3.0",
+     "langchain-openai>=0.3.0",
+     "onnxruntime-gpu>=1.26.0",
+     "opencv-python>=4.13.0.92",
+     "pydantic>=2.0",
+     "python-dotenv>=1.2.2",
+     "uvicorn[standard]>=0.30.0",
++    "weasyprint>=62.0",
+ ]
+ 
+ [project.optional-dependencies]
+ gui = [
+     "qrcode>=8.2",
+ ]
+ 
+ [build-system]
+ requires = ["setuptools>=68"]
+ build-backend = "setuptools.build_meta"
+diff --git a/server/main.py b/server/main.py
+index 806bcb4..ddd7eee 100644
+--- a/server/main.py
++++ b/server/main.py
+@@ -16,20 +16,21 @@ from fastapi import Depends, FastAPI, Header, HTTPException
+ from fastapi.responses import HTMLResponse
+ from fastapi.staticfiles import StaticFiles
+ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+ 
+ from path_bootstrap import ensure_repo_root_on_path
+ 
+ ensure_repo_root_on_path()
+ 
+ import db
+ import r2
++import report
+ import settings
+ import worker
+ from drag_conveyor.config import Profile, load_profile
+ from drag_conveyor.inspection_modes import is_supported_inspection_mode
+ 
+ # ── Lifespan ──────────────────────────────────────────────────────────────────
+ 
+ @asynccontextmanager
+ async def lifespan(app: FastAPI):
+     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+@@ -144,20 +145,33 @@ class CreateJobOut(BaseModel):
+     expires_in: int
+ 
+ 
+ class StatusOut(BaseModel):
+     job_id: str
+     status: str
+     message: str
+     updated_at: str
+ 
+ 
++class CorrectionIn(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    track_id: int
++    defect_type: str
++
++
++class ReportIn(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    inspector_name: str
++    conveyor_name: str
++    corrections: list[CorrectionIn]
++
++
+ # ── GET / (frontend) ──────────────────────────────────────────────────────────
+ 
+ @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+ def serve_frontend() -> HTMLResponse:
+     html = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+     return HTMLResponse(content=html)
+ 
+ 
+ # ── GET /api/health ────────────────────────────────────────────────────────────
+ 
+@@ -286,10 +300,55 @@ def get_result(job_id: str) -> dict[str, Any]:
+         key = defect.get("snapshot_key")
+         if key:
+             defect["snapshot_url"] = r2.presigned_get_url(key, settings.PRESIGNED_GET_EXPIRES)
+     for normal in summary.get("normals", []):
+         key = normal.get("snapshot_key")
+         if key:
+             normal["snapshot_url"] = r2.presigned_get_url(key, settings.PRESIGNED_GET_EXPIRES)
+ 
+     summary["job_id"] = job_id
+     return summary
++
++
++# ── POST /api/jobs/{job_id}/report ────────────────────────────────────────────
++
++@app.post("/api/jobs/{job_id}/report", dependencies=[Depends(require_auth)])
++def save_report(job_id: str, body: ReportIn) -> dict[str, Any]:
++    row = db.get_job(job_id)
++    if row is None:
++        raise HTTPException(status_code=404, detail="Job not found")
++    if row["status"] != "completed":
++        raise HTTPException(status_code=409, detail=f"Job not completed: {row['status']}")
++
++    summary = json.loads(row["result_summary_json"])
++    key_prefix = f"results/{job_id}/"
++
++    def fetch_image(snapshot_key: str) -> bytes | None:
++        if not snapshot_key or ".." in snapshot_key or not snapshot_key.startswith(key_prefix):
++            return None
++        try:
++            return r2.download_bytes(snapshot_key)
++        except Exception as exc:  # noqa: BLE001
++            logging.getLogger(__name__).warning("report image fetch failed for %s: %s", snapshot_key, exc)
++            return None
++
++    meta = {
++        "inspector_name": body.inspector_name,
++        "conveyor_name": body.conveyor_name,
++        "datetime_str": report.format_ict(row["created_at"]),
++    }
++    try:
++        filename = report.save_report(
++            summary=summary,
++            corrections=[c.model_dump() for c in body.corrections],
++            meta=meta,
++            job_id=job_id,
++            created_at_iso=row["created_at"],
++            reports_dir=settings.REPORTS_DIR,
++            fetch_image=fetch_image,
++        )
++    except report.ReportError as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from exc
++    except OSError as exc:
++        raise HTTPException(status_code=500, detail=f"Cannot write report: {exc}") from exc
++
++    return {"filename": filename, "saved": True}
+diff --git a/server/r2.py b/server/r2.py
+index ff21a75..6de5405 100644
+--- a/server/r2.py
++++ b/server/r2.py
+@@ -57,17 +57,22 @@ def object_exists(object_key: str) -> bool:
+ 
+ def delete_object(object_key: str) -> None:
+     _client().delete_object(Bucket=settings.R2_BUCKET_NAME, Key=object_key)
+ 
+ 
+ def download_file(object_key: str, dest: Path) -> None:
+     dest.parent.mkdir(parents=True, exist_ok=True)
+     _client().download_file(settings.R2_BUCKET_NAME, object_key, str(dest))
+ 
+ 
++def download_bytes(object_key: str) -> bytes:
++    resp = _client().get_object(Bucket=settings.R2_BUCKET_NAME, Key=object_key)
++    return resp["Body"].read()
++
++
+ def upload_file(local_path: Path, object_key: str, content_type: str = "application/octet-stream") -> None:
+     _client().upload_file(
+         str(local_path),
+         settings.R2_BUCKET_NAME,
+         object_key,
+         ExtraArgs={"ContentType": content_type},
+     )
+diff --git a/server/report.css b/server/report.css
+new file mode 100644
+index 0000000..8ebc2c3
+--- /dev/null
++++ b/server/report.css
+@@ -0,0 +1,26 @@
++@page { size: A4; margin: 18mm 14mm; }
++* { box-sizing: border-box; }
++body { font-family: "DejaVu Sans", sans-serif; color: #1f2937; font-size: 11px; margin: 0; }
++.hdr { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #166534; padding-bottom: 8px; }
++.hdr .company { font-size: 15px; font-weight: 700; color: #166534; }
++.hdr .branch { font-size: 10px; color: #6b7280; }
++.hdr .code { text-align: right; font-size: 10px; color: #6b7280; }
++.title { text-align: center; font-size: 22px; font-weight: 800; letter-spacing: 1px; margin: 14px 0 2px; }
++.subtitle { text-align: center; color: #166534; font-size: 11px; margin-bottom: 14px; }
++.meta { display: flex; gap: 10px; margin-bottom: 12px; }
++.meta .box { flex: 1; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px 10px; }
++.meta .lbl { font-size: 8px; letter-spacing: 1px; color: #9ca3af; text-transform: uppercase; }
++.meta .val { font-size: 13px; font-weight: 700; margin-top: 2px; }
++.stats { display: flex; gap: 10px; margin-bottom: 16px; }
++.stats .card { flex: 1; border-radius: 8px; padding: 12px 14px; color: #fff; }
++.stats .card.green { background: #15803d; }
++.stats .card.orange { background: #c2410c; }
++.stats .card.blue { background: #475569; }
++.stats .num { font-size: 24px; font-weight: 800; }
++.stats .lbl { font-size: 9px; opacity: .9; }
++.section { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
++.section h3 { display: inline-block; color: #166534; font-size: 13px; margin: 0; }
++.section .badge { float: right; color: #166534; font-size: 10px; border: 1px solid #bbf7d0; border-radius: 10px; padding: 1px 8px; }
++.grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
++.grid img { width: 30%; border-radius: 6px; border: 1px solid #e5e7eb; }
++.none { color: #6b7280; font-style: italic; }
+diff --git a/server/report.py b/server/report.py
+new file mode 100644
+index 0000000..e684443
+--- /dev/null
++++ b/server/report.py
+@@ -0,0 +1,179 @@
++from __future__ import annotations
++
++import html as _html
++import re
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++from typing import Callable
++
++_TZ_ICT = timezone(timedelta(hours=7))
++_REPORT_CSS = (Path(__file__).parent / "report.css").read_text(encoding="utf-8")
++
++_SECTION_LABELS = {
++    "bent_left": "Biến dạng bên trái",
++    "bent_right": "Biến dạng bên phải",
++    "bent_both": "Biến dạng 2 bên",
++    "broken": "Gãy",
++}
++
++_COMPANY = "CÔNG TY CỔ PHẦN C.P. VIỆT NAM"
++_BRANCH = "Chi nhánh Xuân Mai – Hà Nội • Phòng Kỹ Thuật"
++
++ALLOWED_DEFECT_TYPES: tuple[str, ...] = ("bent_left", "bent_right", "bent_both", "broken")
++ALLOWED_CORRECTION_TYPES: tuple[str, ...] = ALLOWED_DEFECT_TYPES + ("normal",)
++
++
++class ReportError(Exception):
++    """Raised when corrected results cannot produce a valid report."""
++
++
++def build_report_data(summary: dict, corrections: list[dict]) -> dict:
++    bars_by_track: dict[int, dict] = {}
++    final_type: dict[int, str] = {}
++
++    for bar in summary.get("defects", []):
++        tid = int(bar["track_id"])
++        bars_by_track[tid] = bar
++        final_type[tid] = bar.get("defect_type") or "_unclassified"
++    for bar in summary.get("normals", []):
++        tid = int(bar["track_id"])
++        bars_by_track[tid] = bar
++        final_type[tid] = "normal"
++
++    for corr in corrections:
++        tid = int(corr["track_id"])
++        ctype = corr["defect_type"]
++        if ctype not in ALLOWED_CORRECTION_TYPES:
++            raise ReportError(f"invalid defect_type: {ctype}")
++        if tid not in bars_by_track:
++            raise ReportError(f"unknown track_id: {tid}")
++        final_type[tid] = ctype
++
++    defects_by_type: dict[str, list[dict]] = {t: [] for t in ALLOWED_DEFECT_TYPES}
++    for tid, ftype in final_type.items():
++        if ftype == "normal":
++            continue
++        if ftype not in ALLOWED_DEFECT_TYPES:
++            raise ReportError(f"bar track {tid} is still unclassified ({ftype})")
++        defects_by_type[ftype].append(bars_by_track[tid])
++
++    defect_count = sum(len(v) for v in defects_by_type.values())
++    total_bars = int(summary.get("total_bars", len(bars_by_track)))
++    defect_rate = (defect_count / total_bars * 100.0) if total_bars else 0.0
++
++    return {
++        "total_bars": total_bars,
++        "defect_count": defect_count,
++        "defect_rate": defect_rate,
++        "defects_by_type": defects_by_type,
++    }
++
++
++def format_ict(iso_utc: str) -> str:
++    dt = datetime.fromisoformat(iso_utc)
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=timezone.utc)
++    dt = dt.astimezone(_TZ_ICT)
++    return dt.strftime("%d/%m/%Y · %H:%M")
++
++
++def sanitize_filename_part(name: str) -> str:
++    import unicodedata
++    name = (name or "").strip()
++    # Normalize and remove diacritics
++    name = unicodedata.normalize("NFD", name)
++    name = "".join(c for c in name if unicodedata.category(c) != "Mn")
++    # Replace non-alphanumeric with underscore
++    cleaned = re.sub(r"[^0-9A-Za-z]+", "_", name).strip("_")
++    return cleaned or "x"
++
++
++def report_filename(conveyor_name: str, created_at_iso: str, job_id: str) -> str:
++    dt = datetime.fromisoformat(created_at_iso)
++    if dt.tzinfo is None:
++        dt = dt.replace(tzinfo=timezone.utc)
++    stamp = dt.astimezone(_TZ_ICT).strftime("%Y%m%d_%H%M")
++    return f"XT-100_{sanitize_filename_part(conveyor_name)}_{stamp}_{job_id}.pdf"
++
++
++def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | None],
++               logo_data_uri: str | None = None) -> str:
++    def esc(s: object) -> str:
++        return _html.escape(str(s))
++
++    logo = f'<img src="{esc(logo_data_uri)}" style="height:40px">' if logo_data_uri else ""
++    sections = []
++    for dtype in ALLOWED_DEFECT_TYPES:
++        bars = report_data["defects_by_type"].get(dtype, [])
++        if not bars:
++            continue
++        imgs = ""
++        for bar in bars:
++            uri = images_by_track.get(int(bar["track_id"]))
++            if uri:
++                imgs += f'<img src="{uri}">'
++        sections.append(
++            f'<div class="section"><span class="badge">{len(bars)} cánh lỗi</span>'
++            f'<h3>● {esc(_SECTION_LABELS[dtype])}</h3>'
++            f'<div class="grid">{imgs}</div></div>'
++        )
++    body_sections = "".join(sections) or '<div class="none">Không phát hiện cánh lỗi</div>'
++
++    return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_REPORT_CSS}</style></head>
++<body>
++  <div class="hdr">
++    <div>{logo}<div class="company">{esc(_COMPANY)}</div><div class="branch">{esc(_BRANCH)}</div></div>
++    <div class="code"><b>PHIẾU KT</b><br>Mã: XT-100</div>
++  </div>
++  <div class="title">PHIẾU KIỂM TRA XÍCH TẢI</div>
++  <div class="subtitle">Báo cáo kiểm tra cánh gạt băng tải</div>
++  <div class="meta">
++    <div class="box"><div class="lbl">Nhân viên kiểm tra</div><div class="val">{esc(meta['inspector_name'])}</div></div>
++    <div class="box"><div class="lbl">Ngày & giờ kiểm tra</div><div class="val">{esc(meta['datetime_str'])}</div></div>
++    <div class="box"><div class="lbl">Tên máy</div><div class="val">{esc(meta['conveyor_name'])}</div></div>
++  </div>
++  <div class="stats">
++    <div class="card green"><div class="num">{report_data['total_bars']}</div><div class="lbl">Tổng số cánh đã kiểm tra</div></div>
++    <div class="card orange"><div class="num">{report_data['defect_count']}</div><div class="lbl">Tổng số cánh lỗi</div></div>
++    <div class="card blue"><div class="num">{report_data['defect_rate']:.1f}%</div><div class="lbl">Tỷ lệ lỗi</div></div>
++  </div>
++  {body_sections}
++</body></html>"""
++
++
++def render_pdf(html: str) -> bytes:
++    from weasyprint import HTML  # lazy: avoid import cost / system-lib requirement at module load
++    return HTML(string=html).write_pdf()
++
++
++def _image_data_uri(data: bytes) -> str:
++    import base64
++    return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
++
++
++def save_report(summary, corrections, meta, job_id, created_at_iso, reports_dir,
++                fetch_image: "Callable[[str], bytes | None]") -> str:
++    report_data = build_report_data(summary, corrections)
++
++    images_by_track: dict[int, str | None] = {}
++    for bars in report_data["defects_by_type"].values():
++        for bar in bars:
++            key = bar.get("snapshot_key")
++            data = fetch_image(key) if key else None
++            images_by_track[int(bar["track_id"])] = _image_data_uri(data) if data else None
++
++    html = build_html(report_data, meta, images_by_track)
++    pdf_bytes = render_pdf(html)
++
++    reports_dir = Path(reports_dir)
++    reports_dir.mkdir(parents=True, exist_ok=True)
++    base = report_filename(meta["conveyor_name"], created_at_iso, job_id)
++    target = reports_dir / base
++    if target.exists():
++        stem, suffix = base[:-4], ".pdf"
++        i = 2
++        while (reports_dir / f"{stem}_{i}{suffix}").exists():
++            i += 1
++        target = reports_dir / f"{stem}_{i}{suffix}"
++    target.write_bytes(pdf_bytes)
++    return target.name
+diff --git a/server/settings.py b/server/settings.py
+index 7ebc7d3..1dfba78 100644
+--- a/server/settings.py
++++ b/server/settings.py
+@@ -28,10 +28,14 @@ BASE_PROFILE_PATH = (_SERVER_DIR / os.environ.get("BASE_PROFILE_PATH", "../confi
+ TEMP_DIR = (_SERVER_DIR / os.environ.get("TEMP_DIR", "runtime/temp")).resolve()
+ 
+ MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 209_715_200))
+ MAX_JOB_DURATION_SECONDS: int = int(os.environ.get("MAX_JOB_DURATION_SECONDS", 900))
+ UPLOAD_EXPIRE_SECONDS: int = int(os.environ.get("UPLOAD_EXPIRE_SECONDS", 1800))
+ PRESIGNED_PUT_EXPIRES: int = int(os.environ.get("PRESIGNED_PUT_EXPIRES_SECONDS", 1800))
+ PRESIGNED_GET_EXPIRES: int = int(os.environ.get("PRESIGNED_GET_EXPIRES_SECONDS", 3600))
+ DELETE_VIDEO_AFTER_SUCCESS: bool = (
+     os.environ.get("DELETE_VIDEO_AFTER_SUCCESS", "true").strip().lower() == "true"
+ )
++
++REPORTS_DIR = Path(
++    os.environ.get("REPORTS_DIR", str(_SERVER_DIR / "runtime" / "reports"))
++).resolve()
+diff --git a/server/static/app.js b/server/static/app.js
+index c571867..9944a6f 100644
+--- a/server/static/app.js
++++ b/server/static/app.js
+@@ -726,20 +726,68 @@ function applyCorrection(key, newType) {
+     statBox(G.allDefects.length + G.allNormals.length, 'Tổng thanh', '') +
+     statBox(defectCount, 'Thanh lỗi', defectCount > 0 ? 'bad' : 'ok');
+   _initDefectSubtabs();
+   const activeKey = G.activeDefectSubtab && _filterBySubtab(G.allDefects, G.activeDefectSubtab).length > 0
+     ? G.activeDefectSubtab
+     : (DEFECT_LABEL_KEYS.find(k => _filterBySubtab(G.allDefects, k).length > 0) || DEFECT_LABEL_KEYS[0]);
+   switchDefectSubtab(activeKey);
+   _renderNormals();
+ }
+ 
++const VALID_DEFECT_TYPES = ['bent_left', 'bent_right', 'bent_both', 'broken'];
++
++function collectCorrections() {
++  const out = [];
++  for (const d of G.allDefects) out.push({ track_id: d.track_id, defect_type: d.defect_type });
++  for (const n of G.allNormals) out.push({ track_id: n.track_id, defect_type: 'normal' });
++  return out;
++}
++
++function hasUnclassified() {
++  return G.allDefects.some(d => !VALID_DEFECT_TYPES.includes(d.defect_type));
++}
++
++function setSaveMsg(text, isErr) {
++  const el = document.getElementById('msg-save');
++  el.style.display = 'block';
++  el.textContent = text;
++  el.classList.toggle('err', !!isErr);
++}
++
++async function saveReport() {
++  if (hasUnclassified()) {
++    setSaveMsg('Còn thanh chưa phân loại — hãy phân loại hết (trái/phải/2 bên/gãy) hoặc đánh dấu bình thường trước khi lưu.', true);
++    return;
++  }
++  const btn = document.getElementById('btn-save-report');
++  btn.disabled = true;
++  btn.textContent = 'Đang lưu...';
++  try {
++    const res = await api('/api/jobs/' + G.jobId + '/report', {
++      method: 'POST',
++      body: JSON.stringify({
++        inspector_name: G.inspector,
++        conveyor_name: G.conveyor,
++        corrections: collectCorrections(),
++      }),
++    });
++    btn.textContent = 'Đã lưu ✓';
++    setSaveMsg('Đã lưu: ' + res.filename, false);
++  } catch (e) {
++    btn.disabled = false;
++    btn.textContent = 'Lưu kết quả';
++    setSaveMsg('Lỗi khi lưu: ' + e.message, true);
++  }
++}
++
++document.getElementById('btn-save-report').addEventListener('click', saveReport);
++
+ function switchTab(tab) {
+   G.activeTab = tab;
+   ['defect', 'normal'].forEach(t => {
+     document.getElementById('tab-btn-' + t).classList.toggle('active', t === tab);
+     document.getElementById('panel-' + t).style.display = t === tab ? '' : 'none';
+   });
+   G.normalLightboxItems = G.allNormals.filter(n => n.snapshot_url).map(n => ({
+     src: n.snapshot_url,
+     meta: `Track #${n.track_id} · Dài: ${(n.length || 0).toFixed(1)} · Rộng: ${(n.width || 0).toFixed(1)}`,
+   }));
+diff --git a/server/static/index.html b/server/static/index.html
+index 3381d43..b8a1f02 100644
+--- a/server/static/index.html
++++ b/server/static/index.html
+@@ -153,20 +153,22 @@
+             <div class="stat-grid" id="stat-grid"></div>
+           </div>
+ 
+           <!-- No defects -->
+           <div id="no-defect" class="card ok-banner" style="display:none">
+             <div class="icon">✅</div>
+             <h2>Không phát hiện lỗi</h2>
+             <p>Tất cả thanh đều đạt tiêu chuẩn</p>
+           </div>
+ 
++          <button class="btn btn-success" id="btn-save-report">Lưu kết quả</button>
++          <div id="msg-save" class="save-msg" style="display:none"></div>
+           <button class="btn btn-primary" id="btn-new-job">Kiểm tra tiếp</button>
+         </div>
+ 
+         <div class="result-main">
+           <!-- Gallery tabs -->
+           <div id="gallery-tabs" style="display:none">
+             <div class="tab-bar">
+               <button class="tab-btn" id="tab-btn-defect" onclick="switchTab('defect')">
+                 Thanh lỗi (<span id="tab-count-defect">0</span>)
+               </button>
+diff --git a/server/static/styles.css b/server/static/styles.css
+index b0edc0e..9a2922c 100644
+--- a/server/static/styles.css
++++ b/server/static/styles.css
+@@ -801,10 +801,14 @@ select:focus {
+   .tab-btn {
+     font-size: 15px;
+   }
+ }
+ 
+ @media (min-width: 1200px) {
+   .defects {
+     grid-template-columns: repeat(3, minmax(0, 1fr));
+   }
+ }
++
++.btn-success:disabled { opacity: .6; }
++.save-msg { margin-top: 8px; font-size: 13px; color: #166534; }
++.save-msg.err { color: #b91c1c; }
+diff --git a/tests/test_report_endpoint.py b/tests/test_report_endpoint.py
+new file mode 100644
+index 0000000..8332ad0
+--- /dev/null
++++ b/tests/test_report_endpoint.py
+@@ -0,0 +1,95 @@
++from __future__ import annotations
++
++import importlib
++import json
++import os
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest import mock
++
++ROOT = Path(__file__).resolve().parents[1]
++SERVER_DIR = ROOT / "server"
++
++
++def _load(temp_dir: Path):
++    os.environ.update({
++        "R2_ENDPOINT_URL": "https://example.invalid", "R2_ACCESS_KEY_ID": "k",
++        "R2_SECRET_ACCESS_KEY": "s", "R2_BUCKET_NAME": "b", "API_AUTH_TOKEN": "t",
++        "REPORTS_DIR": str(temp_dir / "reports"),
++    })
++    if str(SERVER_DIR) not in sys.path:
++        sys.path.insert(0, str(SERVER_DIR))
++    for name in ("settings", "db", "r2", "worker", "main", "report"):
++        sys.modules.pop(name, None)
++    db = importlib.import_module("db")
++    settings = importlib.import_module("settings")
++    importlib.import_module("worker")
++    main = importlib.import_module("main")
++    db.DB_PATH = temp_dir / "jobs.db"
++    settings.TEMP_DIR = temp_dir / "temp"
++    settings.TEMP_DIR.mkdir(parents=True, exist_ok=True)
++    settings.REPORTS_DIR = temp_dir / "reports"
++    db.init_db()
++    return db, settings, main
++
++
++_SUMMARY = {
++    "total_bars": 3,
++    "defects": [{"track_id": 1, "defect_type": "bent_left", "snapshot_key": "results/job1/d/a.jpg"}],
++    "normals": [{"track_id": 2, "snapshot_key": "results/job1/n/b.jpg"}],
++}
++
++
++def _seed_completed_job(db, summary=_SUMMARY, job_id="job1"):
++    # create_job is keyword-only and needs status + roi_config (dict);
++    # save_result only completes a job whose status is 'processing'.
++    db.create_job(job_id=job_id, status="processing", object_key="vid.mp4",
++                  content_type="video/mp4", size_bytes=1, inspection_mode="auto_baseline",
++                  roi_config={}, now=db.now())
++    db.save_result(job_id=job_id, summary=summary, now=db.now(), success=True)
++
++
++class ReportEndpointTests(unittest.TestCase):
++    def test_save_report_writes_file(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            db, settings, main = _load(Path(tmp))
++            _seed_completed_job(db)
++            body = main.ReportIn.model_validate({
++                "inspector_name": "Trần Văn Trường", "conveyor_name": "M515A",
++                "corrections": [{"track_id": 1, "defect_type": "bent_left"}],
++            })
++            with mock.patch.object(main.r2, "download_bytes", return_value=b"img"), \
++                 mock.patch.object(main.report, "render_pdf", return_value=b"%PDF fake"):
++                out = main.save_report("job1", body)
++            self.assertTrue(out["saved"])
++            self.assertTrue(out["filename"].endswith(".pdf"))
++            self.assertTrue((Path(tmp) / "reports" / out["filename"]).exists())
++
++    def test_unclassified_returns_400(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            db, settings, main = _load(Path(tmp))
++            bad = dict(_SUMMARY)
++            bad["defects"] = [{"track_id": 1, "defect_type": "other", "snapshot_key": "results/job1/x.jpg"}]
++            _seed_completed_job(db, summary=bad)
++            body = main.ReportIn.model_validate({"inspector_name": "A", "conveyor_name": "B", "corrections": []})
++            with mock.patch.object(main.report, "render_pdf", return_value=b"%PDF"):
++                with self.assertRaises(main.HTTPException) as ctx:
++                    main.save_report("job1", body)
++            self.assertEqual(ctx.exception.status_code, 400)
++
++    def test_not_completed_returns_409(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            db, settings, main = _load(Path(tmp))
++            # Job exists but is not completed (status='uploaded') → 409.
++            db.create_job(job_id="job1", status="uploaded", object_key="v", content_type="video/mp4",
++                          size_bytes=1, inspection_mode="auto_baseline", roi_config={}, now=db.now())
++            body = main.ReportIn.model_validate({"inspector_name": "A", "conveyor_name": "B", "corrections": []})
++            with self.assertRaises(main.HTTPException) as ctx:
++                main.save_report("job1", body)
++            self.assertEqual(ctx.exception.status_code, 409)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_report_frontend_contract.py b/tests/test_report_frontend_contract.py
+new file mode 100644
+index 0000000..a690e27
+--- /dev/null
++++ b/tests/test_report_frontend_contract.py
+@@ -0,0 +1,23 @@
++from __future__ import annotations
++
++import unittest
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++STATIC = ROOT / "server" / "static"
++
++
++class ReportFrontendContractTests(unittest.TestCase):
++    def test_index_has_save_button(self) -> None:
++        html = (STATIC / "index.html").read_text(encoding="utf-8")
++        self.assertIn('id="btn-save-report"', html)
++
++    def test_appjs_posts_to_report_endpoint(self) -> None:
++        js = (STATIC / "app.js").read_text(encoding="utf-8")
++        self.assertIn("/report", js)
++        self.assertIn("collectCorrections", js)
++        self.assertIn("saveReport", js)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_report_html.py b/tests/test_report_html.py
+new file mode 100644
+index 0000000..26fa217
+--- /dev/null
++++ b/tests/test_report_html.py
+@@ -0,0 +1,60 @@
++from __future__ import annotations
++
++import sys
++import unittest
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++SERVER_DIR = ROOT / "server"
++if str(SERVER_DIR) not in sys.path:
++    sys.path.insert(0, str(SERVER_DIR))
++
++import report  # noqa: E402
++
++
++class ReportHtmlTests(unittest.TestCase):
++    def test_format_ict(self) -> None:
++        self.assertEqual(report.format_ict("2026-06-11T11:47:00+00:00"), "11/06/2026 · 18:47")
++
++    def test_sanitize_filename_part(self) -> None:
++        self.assertEqual(report.sanitize_filename_part("M515A"), "M515A")
++        self.assertEqual(report.sanitize_filename_part("Băng / 1"), "Bang_1")
++
++    def test_report_filename(self) -> None:
++        name = report.report_filename("M515A", "2026-06-11T11:47:00+00:00", "job123")
++        self.assertEqual(name, "XT-100_M515A_20260611_1847_job123.pdf")
++
++    def test_build_html_contains_sections_and_totals(self) -> None:
++        data = {
++            "total_bars": 100,
++            "defect_count": 10,
++            "defect_rate": 10.0,
++            "defects_by_type": {
++                "bent_left": [{"track_id": 1, "snapshot_key": "k1"}],
++                "bent_right": [],
++                "bent_both": [],
++                "broken": [{"track_id": 2, "snapshot_key": "k2"}],
++            },
++        }
++        meta = {"inspector_name": "Trần Văn Trường", "conveyor_name": "M515A", "datetime_str": "11/06/2026 · 18:47"}
++        html = report.build_html(data, meta, images_by_track={1: "data:image/jpeg;base64,AAA"})
++        self.assertIn("PHIẾU KIỂM TRA XÍCH TẢI", html)
++        self.assertIn("Trần Văn Trường", html)
++        self.assertIn("M515A", html)
++        self.assertIn("100", html)            # total
++        self.assertIn("10.0%", html)          # rate
++        self.assertIn("Biến dạng bên trái", html)
++        self.assertIn("Gãy", html)
++        self.assertNotIn("Biến dạng bên phải", html)  # empty section hidden
++        self.assertIn("data:image/jpeg;base64,AAA", html)
++
++    def test_build_html_zero_defects(self) -> None:
++        data = {"total_bars": 50, "defect_count": 0, "defect_rate": 0.0,
++                "defects_by_type": {t: [] for t in report.ALLOWED_DEFECT_TYPES}}
++        meta = {"inspector_name": "A", "conveyor_name": "B", "datetime_str": "x"}
++        html = report.build_html(data, meta, images_by_track={})
++        self.assertIn("Không phát hiện cánh lỗi", html)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_report_infra.py b/tests/test_report_infra.py
+new file mode 100644
+index 0000000..83381ae
+--- /dev/null
++++ b/tests/test_report_infra.py
+@@ -0,0 +1,55 @@
++from __future__ import annotations
++
++import importlib
++import os
++import sys
++import unittest
++from pathlib import Path
++from unittest import mock
++
++ROOT = Path(__file__).resolve().parents[1]
++SERVER_DIR = ROOT / "server"
++
++
++def _load(temp_dir: Path):
++    env = {
++        "R2_ENDPOINT_URL": "https://example.invalid",
++        "R2_ACCESS_KEY_ID": "k",
++        "R2_SECRET_ACCESS_KEY": "s",
++        "R2_BUCKET_NAME": "b",
++        "API_AUTH_TOKEN": "t",
++        "REPORTS_DIR": str(temp_dir / "reports"),
++    }
++    os.environ.update(env)
++    if str(SERVER_DIR) not in sys.path:
++        sys.path.insert(0, str(SERVER_DIR))
++    for name in ("settings", "r2"):
++        sys.modules.pop(name, None)
++    settings = importlib.import_module("settings")
++    r2 = importlib.import_module("r2")
++    return settings, r2
++
++
++class ReportInfraTests(unittest.TestCase):
++    def test_reports_dir_reads_env(self) -> None:
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            settings, _ = _load(Path(tmp))
++            self.assertEqual(settings.REPORTS_DIR, (Path(tmp) / "reports").resolve())
++
++    def test_download_bytes_reads_object_body(self) -> None:
++        import tempfile
++        with tempfile.TemporaryDirectory() as tmp:
++            _, r2 = _load(Path(tmp))
++            fake_body = mock.Mock()
++            fake_body.read.return_value = b"image-bytes"
++            fake_client = mock.Mock()
++            fake_client.get_object.return_value = {"Body": fake_body}
++            with mock.patch.object(r2, "_client", return_value=fake_client):
++                data = r2.download_bytes("results/job1/snapshots/defects/x.jpg")
++            self.assertEqual(data, b"image-bytes")
++            fake_client.get_object.assert_called_once()
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_report_logic.py b/tests/test_report_logic.py
+new file mode 100644
+index 0000000..b520ac3
+--- /dev/null
++++ b/tests/test_report_logic.py
+@@ -0,0 +1,67 @@
++from __future__ import annotations
++
++import sys
++import unittest
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++SERVER_DIR = ROOT / "server"
++if str(SERVER_DIR) not in sys.path:
++    sys.path.insert(0, str(SERVER_DIR))
++
++import report  # noqa: E402
++
++
++def _summary() -> dict:
++    return {
++        "total_bars": 10,
++        "defects": [
++            {"track_id": 1, "defect_type": "bent_left", "snapshot_key": "results/j/snapshots/defects/a.jpg"},
++            {"track_id": 2, "defect_type": "broken", "snapshot_key": "results/j/snapshots/defects/b.jpg"},
++        ],
++        "normals": [
++            {"track_id": 3, "snapshot_key": "results/j/snapshots/normals/c.jpg"},
++        ],
++    }
++
++
++class ReportLogicTests(unittest.TestCase):
++    def test_groups_defects_and_counts(self) -> None:
++        data = report.build_report_data(_summary(), corrections=[])
++        self.assertEqual(data["total_bars"], 10)
++        self.assertEqual(data["defect_count"], 2)
++        self.assertEqual(data["defect_rate"], 20.0)
++        self.assertEqual(len(data["defects_by_type"]["bent_left"]), 1)
++        self.assertEqual(len(data["defects_by_type"]["broken"]), 1)
++
++    def test_correction_changes_type(self) -> None:
++        data = report.build_report_data(_summary(), corrections=[{"track_id": 2, "defect_type": "bent_right"}])
++        self.assertEqual(len(data["defects_by_type"]["broken"]), 0)
++        self.assertEqual(len(data["defects_by_type"]["bent_right"]), 1)
++
++    def test_correction_normal_removes_defect(self) -> None:
++        data = report.build_report_data(_summary(), corrections=[{"track_id": 1, "defect_type": "normal"}])
++        self.assertEqual(data["defect_count"], 1)
++
++    def test_promote_normal_to_defect(self) -> None:
++        data = report.build_report_data(_summary(), corrections=[{"track_id": 3, "defect_type": "bent_both"}])
++        self.assertEqual(data["defect_count"], 3)
++        self.assertEqual(len(data["defects_by_type"]["bent_both"]), 1)
++
++    def test_uncorrected_other_defect_raises(self) -> None:
++        s = _summary()
++        s["defects"].append({"track_id": 5, "defect_type": "other", "snapshot_key": "results/j/x.jpg"})
++        with self.assertRaises(report.ReportError):
++            report.build_report_data(s, corrections=[])
++
++    def test_invalid_correction_type_raises(self) -> None:
++        with self.assertRaises(report.ReportError):
++            report.build_report_data(_summary(), corrections=[{"track_id": 1, "defect_type": "exploded"}])
++
++    def test_unknown_track_id_raises(self) -> None:
++        with self.assertRaises(report.ReportError):
++            report.build_report_data(_summary(), corrections=[{"track_id": 999, "defect_type": "broken"}])
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/test_report_save.py b/tests/test_report_save.py
+new file mode 100644
+index 0000000..0b4cf2f
+--- /dev/null
++++ b/tests/test_report_save.py
+@@ -0,0 +1,74 @@
++from __future__ import annotations
++
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest import mock
++
++ROOT = Path(__file__).resolve().parents[1]
++SERVER_DIR = ROOT / "server"
++if str(SERVER_DIR) not in sys.path:
++    sys.path.insert(0, str(SERVER_DIR))
++
++import report  # noqa: E402
++
++
++def _weasyprint_available() -> bool:
++    try:
++        import weasyprint  # noqa: F401
++        return True
++    except Exception:
++        return False
++
++
++def _summary() -> dict:
++    return {
++        "total_bars": 4,
++        "defects": [{"track_id": 1, "defect_type": "bent_left", "snapshot_key": "results/j/d/a.jpg"}],
++        "normals": [{"track_id": 2, "snapshot_key": "results/j/n/b.jpg"}],
++    }
++
++
++_META = {"inspector_name": "A", "conveyor_name": "M515A", "datetime_str": "11/06/2026 · 18:47"}
++
++
++class ReportSaveTests(unittest.TestCase):
++    def test_save_writes_pdf_and_returns_filename(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            with mock.patch.object(report, "render_pdf", return_value=b"%PDF-1.7 fake"):
++                name = report.save_report(
++                    summary=_summary(), corrections=[], meta=_META, job_id="job123",
++                    created_at_iso="2026-06-11T11:47:00+00:00", reports_dir=Path(tmp),
++                    fetch_image=lambda key: b"img",
++                )
++            self.assertEqual(name, "XT-100_M515A_20260611_1847_job123.pdf")
++            saved = Path(tmp) / name
++            self.assertTrue(saved.exists())
++            self.assertTrue(saved.read_bytes().startswith(b"%PDF"))
++
++    def test_save_dedupes_on_collision(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            with mock.patch.object(report, "render_pdf", return_value=b"%PDF x"):
++                n1 = report.save_report(_summary(), [], _META, "job123",
++                                        "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
++                n2 = report.save_report(_summary(), [], _META, "job123",
++                                        "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
++            self.assertNotEqual(n1, n2)
++            self.assertTrue(n2.endswith("_2.pdf"))
++
++    def test_save_propagates_report_error(self) -> None:
++        s = _summary()
++        s["defects"].append({"track_id": 9, "defect_type": "other", "snapshot_key": "results/j/x.jpg"})
++        with tempfile.TemporaryDirectory() as tmp:
++            with self.assertRaises(report.ReportError):
++                report.save_report(s, [], _META, "j", "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
++
++    @unittest.skipUnless(_weasyprint_available(), "WeasyPrint + system libs not installed")
++    def test_render_pdf_smoke(self) -> None:
++        pdf = report.render_pdf("<html><body><h1>hi</h1></body></html>")
++        self.assertTrue(pdf.startswith(b"%PDF"))
++
++
++if __name__ == "__main__":
++    unittest.main()

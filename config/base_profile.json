@@ -63,7 +63,7 @@
       "max_jump_px": 80.0,
       "ttl_frames": 10,
       "min_hits": 2,
-      "max_reverse_px": 5.0,
+      "max_reverse_px": 12.0,
       "max_area_ratio_change": 3.0
     },
     "detection_filter": {
@@ -75,14 +75,16 @@
     "mode": "auto_baseline",
     "defect_policy": {
       "min_violated_dimensions": 1,
-      "score_dimension_count": 2
+      "score_dimension_count": 2,
+      "deadband_ratio": 0.0,
+      "deadband_floor": 0.0
     },
     "auto_baseline": {
       "rules_version": "geometry_v1",
-      "length_lower_percentile": "p2",
+      "length_lower_percentile": "p5",
       "length_upper_percentile": "p99",
       "width_lower_percentile": "p1",
-      "width_upper_percentile": "p98",
+      "width_upper_percentile": "p95",
       "length_lower_margin": 0.0,
       "length_upper_margin": 0.15,
       "width_lower_margin": 0.15,
@@ -104,7 +106,8 @@
       "length_max_ratio": 1.1
     },
     "vlm": {
-      "model": "gpt-5.4"
+      "model": "gpt-5.4",
+      "can_mark_normal": false
     }
   }
 }

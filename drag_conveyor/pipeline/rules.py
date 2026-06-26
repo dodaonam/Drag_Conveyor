@@ -32,11 +32,23 @@ class RuleEngine:
         width_min = _percentile(calibration_result.features["width"], rules.width_lower_percentile) * (1.0 - rules.width_lower_margin)
         width_max = _percentile(calibration_result.features["width"], rules.width_upper_percentile) * (1.0 + rules.width_upper_margin)
 
+        # Deadband chống nhiễu đo: chỉ coi là vi phạm khi vượt biên một khoảng tối thiểu
+        # tolerance = max(floor, |bound| * ratio). Loại dao động nhỏ do segmentation,
+        # vẫn giữ lỗi hình học rõ. Áp dụng cho cả bốn biên.
+        length_min_tol = _tolerance(length_min, defect_policy)
+        length_max_tol = _tolerance(length_max, defect_policy)
+        width_min_tol = _tolerance(width_min, defect_policy)
+        width_max_tol = _tolerance(width_max, defect_policy)
+
         thresholds: dict[str, float] = {
             "length_min": float(length_min),
             "length_max": float(length_max),
             "width_min": float(width_min),
             "width_max": float(width_max),
+            "length_min_tol": float(length_min_tol),
+            "length_max_tol": float(length_max_tol),
+            "width_min_tol": float(width_min_tol),
+            "width_max_tol": float(width_max_tol),
         }
         margins: dict[str, float] = {
             "length_margin": float(min(length - length_min, length_max - length)),
@@ -44,17 +56,17 @@ class RuleEngine:
         }
         violated_dimensions = 0
 
-        if length < length_min:
+        if length < length_min - length_min_tol:
             reasons.append("length_too_short")
             violated_dimensions += 1
-        elif length > length_max:
+        elif length > length_max + length_max_tol:
             reasons.append("length_too_long")
             violated_dimensions += 1
 
-        if width < width_min:
+        if width < width_min - width_min_tol:
             reasons.append("width_too_small")
             violated_dimensions += 1
-        elif width > width_max:
+        elif width > width_max + width_max_tol:
             reasons.append("width_too_large")
             violated_dimensions += 1
 
@@ -78,6 +90,11 @@ def _percentile(stats, name: str) -> float:
     if value is None:
         raise ValueError(f"Calibration feature stats missing percentile: {name}")
     return float(value)
+
+
+def _tolerance(bound: float, defect_policy: DefectPolicyConfig) -> float:
+    """Deadband cho một biên: max(floor, |bound| * ratio)."""
+    return max(defect_policy.deadband_floor, abs(float(bound)) * defect_policy.deadband_ratio)
 
 
 __all__ = ["RuleEngine", "RuleEvaluation"]

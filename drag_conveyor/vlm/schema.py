@@ -8,8 +8,11 @@ from pydantic import BaseModel, Field
 
 class DefectReason(BaseModel):
     bar_id: str = Field(description="The id of the conveyor bar, from the label in the top-left corner")
-    defect_type: Literal["bent_left", "bent_right", "bent_both", "broken", "other"] = Field(
-        description="The type of defect on the conveyor bar"
+    defect_type: Literal["normal", "bent_left", "bent_right", "bent_both", "broken", "other"] = Field(
+        description=(
+            "The type of defect on the conveyor bar, or 'normal' if the bar actually looks "
+            "healthy/straight despite being flagged by the geometry system (false positive)"
+        )
     )
 
 

@@ -108,6 +108,8 @@ class CollectionConfig:
 class DefectPolicyConfig:
     min_violated_dimensions: int
     score_dimension_count: int
+    deadband_ratio: float = 0.005
+    deadband_floor: float = 1.0
 
 
 @dataclass(slots=True)
@@ -180,6 +182,9 @@ class AverageRatioConfig:
 @dataclass(slots=True)
 class VlmConfig:
     model: str
+    # Cho phép VLM lật một thanh nghi lỗi về "normal" (lọc false positive).
+    # Mặc định OFF để giữ recall cao: VLM chỉ gán loại lỗi, không loại bỏ thanh.
+    can_mark_normal: bool = False
 
 
 @dataclass(slots=True)
@@ -424,9 +429,10 @@ def _parse_vlm_config(inspection_raw: dict[str, Any]) -> VlmConfig | None:
         return None
     if not isinstance(vlm_raw, dict):
         raise ProfileError("inspection.vlm must be an object")
-    _reject_unknown_keys(vlm_raw, {"model"}, "inspection.vlm")
+    _reject_unknown_keys(vlm_raw, {"model", "can_mark_normal"}, "inspection.vlm")
     return VlmConfig(
         model=_required_str(vlm_raw, "model", "inspection.vlm.model"),
+        can_mark_normal=bool(vlm_raw.get("can_mark_normal", False)),
     )
 
 
@@ -537,7 +543,7 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
     )
     _reject_unknown_keys(
         defect_policy_raw,
-        {"min_violated_dimensions", "score_dimension_count"},
+        {"min_violated_dimensions", "score_dimension_count", "deadband_ratio", "deadband_floor"},
         "inspection.defect_policy",
     )
     _reject_unknown_keys(
@@ -763,6 +769,8 @@ def profile_from_dict(raw: dict[str, Any]) -> Profile:
                         "score_dimension_count",
                         "inspection.defect_policy.score_dimension_count",
                     ),
+                    deadband_ratio=float(defect_policy_raw.get("deadband_ratio", 0.005)),
+                    deadband_floor=float(defect_policy_raw.get("deadband_floor", 1.0)),
                 ),
                 auto_baseline=AutoBaselineConfig(
                     length_lower_percentile=_required_str(
@@ -954,6 +962,10 @@ def validate_profile(profile: Profile) -> None:
         raise ProfileError(
             "inspection.defect_policy.min_violated_dimensions must be <= score_dimension_count"
         )
+    if policy.deadband_ratio < 0.0:
+        raise ProfileError("inspection.defect_policy.deadband_ratio must be >= 0")
+    if policy.deadband_floor < 0.0:
+        raise ProfileError("inspection.defect_policy.deadband_floor must be >= 0")
 
     auto = inspection.auto_baseline
     for field, value in (

@@ -15,6 +15,7 @@ from path_bootstrap import ensure_repo_root_on_path
 ensure_repo_root_on_path()
 
 import db
+import preprocess
 import r2
 import settings
 
@@ -44,10 +45,13 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
             "track_id": bar.track_id,
             "frame_id": bar.frame_id,
             "reasons": bar.reasons,
+            "rule_result": bar.rule_result or bar.result,
             "defect_type": bar.defect_type,
             "vlm_called": bar.vlm_called,
             "length": bar.measurements.get("length", 0.0),
             "width": bar.measurements.get("width", 0.0),
+            "thresholds": bar.thresholds,
+            "margins": bar.margins,
             "snapshot_key": snap_key,
         })
     normals = []
@@ -57,10 +61,17 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
         snap_name = f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
         snap_key = next((k for k in normal_keys if k.endswith(snap_name)), None)
         normals.append({
+            "bar_id": bar.bar_id,
             "track_id": bar.track_id,
             "frame_id": bar.frame_id,
+            "reasons": bar.reasons,
+            "rule_result": bar.rule_result or bar.result,
+            "defect_type": bar.defect_type,
+            "vlm_called": bar.vlm_called,
             "length": bar.measurements.get("length", 0.0),
             "width": bar.measurements.get("width", 0.0),
+            "thresholds": bar.thresholds,
+            "margins": bar.margins,
             "snapshot_key": snap_key,
         })
     return {
@@ -108,8 +119,22 @@ def _process_job(job_id: str) -> None:
         cap.release()
         LOGGER.info("[%s] Video OK: %d frames", job_id, total_frames)
 
-        # 3. Load base profile and apply client ROI
+        # 2.5 Slow the conveyor down before inference (interpolated frames) so each
+        #     bar moves less per frame → more stable tracking. Falls back to the
+        #     original video if preprocessing fails for any reason.
         db.update_status(job_id, "processing", db.now())
+        inference_source = video_path
+        if preprocess.SLOWDOWN_FACTOR < 1.0:
+            try:
+                slow_path = temp_job_dir / "slowmo.mp4"
+                preprocess.slow_down_video(video_path, slow_path)
+                inference_source = slow_path
+                LOGGER.info("[%s] Slow-motion applied (%.2fx)", job_id, preprocess.SLOWDOWN_FACTOR)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("[%s] Slow-motion preprocessing failed, using original: %s", job_id, exc)
+                inference_source = video_path
+
+        # 3. Load base profile and apply client ROI
         profile = load_profile(settings.BASE_PROFILE_PATH)
         inspection_mode = str(row["inspection_mode"] or profile.inspection.mode)
         profile = profile.with_roi(roi_config)
@@ -118,7 +143,7 @@ def _process_job(job_id: str) -> None:
         LOGGER.info("[%s] Starting inspection", job_id)
         result = run_batch_inspection(
             profile=profile,
-            source=str(video_path),
+            source=str(inference_source),
             run_id=job_id,
             snapshots_root=temp_job_dir / "snapshots",
             inspection_mode=inspection_mode,

@@ -1,0 +1,221 @@
+8b84df9 feat: add POST /api/jobs/{id}/report endpoint
+ server/main.py                | 59 +++++++++++++++++++++++++++
+ tests/test_report_endpoint.py | 95 +++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 154 insertions(+)
+diff --git a/server/main.py b/server/main.py
+index 806bcb4..26ee8b8 100644
+--- a/server/main.py
++++ b/server/main.py
+@@ -16,20 +16,21 @@ from fastapi import Depends, FastAPI, Header, HTTPException
+ from fastapi.responses import HTMLResponse
+ from fastapi.staticfiles import StaticFiles
+ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+ 
+ from path_bootstrap import ensure_repo_root_on_path
+ 
+ ensure_repo_root_on_path()
+ 
+ import db
+ import r2
++import report
+ import settings
+ import worker
+ from drag_conveyor.config import Profile, load_profile
+ from drag_conveyor.inspection_modes import is_supported_inspection_mode
+ 
+ # ── Lifespan ──────────────────────────────────────────────────────────────────
+ 
+ @asynccontextmanager
+ async def lifespan(app: FastAPI):
+     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+@@ -144,20 +145,33 @@ class CreateJobOut(BaseModel):
+     expires_in: int
+ 
+ 
+ class StatusOut(BaseModel):
+     job_id: str
+     status: str
+     message: str
+     updated_at: str
+ 
+ 
++class CorrectionIn(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    track_id: int
++    defect_type: str
++
++
++class ReportIn(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++    inspector_name: str
++    conveyor_name: str
++    corrections: list[CorrectionIn]
++
++
+ # ── GET / (frontend) ──────────────────────────────────────────────────────────
+ 
+ @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+ def serve_frontend() -> HTMLResponse:
+     html = (Path(__file__).parent / "static" / "index.html").read_text(encoding="utf-8")
+     return HTMLResponse(content=html)
+ 
+ 
+ # ── GET /api/health ────────────────────────────────────────────────────────────
+ 
+@@ -286,10 +300,55 @@ def get_result(job_id: str) -> dict[str, Any]:
+         key = defect.get("snapshot_key")
+         if key:
+             defect["snapshot_url"] = r2.presigned_get_url(key, settings.PRESIGNED_GET_EXPIRES)
+     for normal in summary.get("normals", []):
+         key = normal.get("snapshot_key")
+         if key:
+             normal["snapshot_url"] = r2.presigned_get_url(key, settings.PRESIGNED_GET_EXPIRES)
+ 
+     summary["job_id"] = job_id
+     return summary
++
++
++# ── POST /api/jobs/{job_id}/report ────────────────────────────────────────────
++
++@app.post("/api/jobs/{job_id}/report", dependencies=[Depends(require_auth)])
++def save_report(job_id: str, body: ReportIn) -> dict[str, Any]:
++    row = db.get_job(job_id)
++    if row is None:
++        raise HTTPException(status_code=404, detail="Job not found")
++    if row["status"] != "completed":
++        raise HTTPException(status_code=409, detail=f"Job not completed: {row['status']}")
++
++    summary = json.loads(row["result_summary_json"])
++    key_prefix = f"results/{job_id}/"
++
++    def fetch_image(snapshot_key: str) -> bytes | None:
++        if not snapshot_key or not snapshot_key.startswith(key_prefix):
++            return None
++        try:
++            return r2.download_bytes(snapshot_key)
++        except Exception as exc:  # noqa: BLE001
++            logging.getLogger(__name__).warning("report image fetch failed for %s: %s", snapshot_key, exc)
++            return None
++
++    meta = {
++        "inspector_name": body.inspector_name,
++        "conveyor_name": body.conveyor_name,
++        "datetime_str": report.format_ict(row["created_at"]),
++    }
++    try:
++        filename = report.save_report(
++            summary=summary,
++            corrections=[c.model_dump() for c in body.corrections],
++            meta=meta,
++            job_id=job_id,
++            created_at_iso=row["created_at"],
++            reports_dir=settings.REPORTS_DIR,
++            fetch_image=fetch_image,
++        )
++    except report.ReportError as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from exc
++    except OSError as exc:
++        raise HTTPException(status_code=500, detail=f"Cannot write report: {exc}") from exc
++
++    return {"filename": filename, "saved": True}
+diff --git a/tests/test_report_endpoint.py b/tests/test_report_endpoint.py
+new file mode 100644
+index 0000000..8332ad0
+--- /dev/null
++++ b/tests/test_report_endpoint.py
+@@ -0,0 +1,95 @@
++from __future__ import annotations
++
++import importlib
++import json
++import os
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest import mock
++
++ROOT = Path(__file__).resolve().parents[1]
++SERVER_DIR = ROOT / "server"
++
++
++def _load(temp_dir: Path):
++    os.environ.update({
++        "R2_ENDPOINT_URL": "https://example.invalid", "R2_ACCESS_KEY_ID": "k",
++        "R2_SECRET_ACCESS_KEY": "s", "R2_BUCKET_NAME": "b", "API_AUTH_TOKEN": "t",
++        "REPORTS_DIR": str(temp_dir / "reports"),
++    })
++    if str(SERVER_DIR) not in sys.path:
++        sys.path.insert(0, str(SERVER_DIR))
++    for name in ("settings", "db", "r2", "worker", "main", "report"):
++        sys.modules.pop(name, None)
++    db = importlib.import_module("db")
++    settings = importlib.import_module("settings")
++    importlib.import_module("worker")
++    main = importlib.import_module("main")
++    db.DB_PATH = temp_dir / "jobs.db"
++    settings.TEMP_DIR = temp_dir / "temp"
++    settings.TEMP_DIR.mkdir(parents=True, exist_ok=True)
++    settings.REPORTS_DIR = temp_dir / "reports"
++    db.init_db()
++    return db, settings, main
++
++
++_SUMMARY = {
++    "total_bars": 3,
++    "defects": [{"track_id": 1, "defect_type": "bent_left", "snapshot_key": "results/job1/d/a.jpg"}],
++    "normals": [{"track_id": 2, "snapshot_key": "results/job1/n/b.jpg"}],
++}
++
++
++def _seed_completed_job(db, summary=_SUMMARY, job_id="job1"):
++    # create_job is keyword-only and needs status + roi_config (dict);
++    # save_result only completes a job whose status is 'processing'.
++    db.create_job(job_id=job_id, status="processing", object_key="vid.mp4",
++                  content_type="video/mp4", size_bytes=1, inspection_mode="auto_baseline",
++                  roi_config={}, now=db.now())
++    db.save_result(job_id=job_id, summary=summary, now=db.now(), success=True)
++
++
++class ReportEndpointTests(unittest.TestCase):
++    def test_save_report_writes_file(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            db, settings, main = _load(Path(tmp))
++            _seed_completed_job(db)
++            body = main.ReportIn.model_validate({
++                "inspector_name": "Trần Văn Trường", "conveyor_name": "M515A",
++                "corrections": [{"track_id": 1, "defect_type": "bent_left"}],
++            })
++            with mock.patch.object(main.r2, "download_bytes", return_value=b"img"), \
++                 mock.patch.object(main.report, "render_pdf", return_value=b"%PDF fake"):
++                out = main.save_report("job1", body)
++            self.assertTrue(out["saved"])
++            self.assertTrue(out["filename"].endswith(".pdf"))
++            self.assertTrue((Path(tmp) / "reports" / out["filename"]).exists())
++
++    def test_unclassified_returns_400(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            db, settings, main = _load(Path(tmp))
++            bad = dict(_SUMMARY)
++            bad["defects"] = [{"track_id": 1, "defect_type": "other", "snapshot_key": "results/job1/x.jpg"}]
++            _seed_completed_job(db, summary=bad)
++            body = main.ReportIn.model_validate({"inspector_name": "A", "conveyor_name": "B", "corrections": []})
++            with mock.patch.object(main.report, "render_pdf", return_value=b"%PDF"):
++                with self.assertRaises(main.HTTPException) as ctx:
++                    main.save_report("job1", body)
++            self.assertEqual(ctx.exception.status_code, 400)
++
++    def test_not_completed_returns_409(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            db, settings, main = _load(Path(tmp))
++            # Job exists but is not completed (status='uploaded') → 409.
++            db.create_job(job_id="job1", status="uploaded", object_key="v", content_type="video/mp4",
++                          size_bytes=1, inspection_mode="auto_baseline", roi_config={}, now=db.now())
++            body = main.ReportIn.model_validate({"inspector_name": "A", "conveyor_name": "B", "corrections": []})
++            with self.assertRaises(main.HTTPException) as ctx:
++                main.save_report("job1", body)
++            self.assertEqual(ctx.exception.status_code, 409)
++
++
++if __name__ == "__main__":
++    unittest.main()

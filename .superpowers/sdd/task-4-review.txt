@@ -1,0 +1,200 @@
+bde06f3 feat: render report PDF with WeasyPrint and save to disk
+ README.md                 |  10 ++
+ pyproject.toml            |   1 +
+ server/report.py          |  39 ++++++
+ tests/test_report_save.py |  74 ++++++++++
+ uv.lock                   | 343 ++++++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 467 insertions(+)
+diff --git a/README.md b/README.md
+index 419fb30..dba01a1 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,13 @@
+ Chạy web server để upload video và chọn ROI trực tiếp từ giao diện mobile/web.
+ 
+ ROI hiện luôn xử lý theo hướng băng chuyền từ trên xuống dưới; giao diện chỉ cho chọn vùng kiểm tra và trigger band.
++
++## Xuất phiếu PDF (WeasyPrint)
++
++Tính năng lưu phiếu kiểm tra PDF dùng WeasyPrint. Cài thư viện hệ thống một lần trong WSL:
++
++    sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0
++
++Đặt thư mục lưu phiếu trong `server/.env`:
++
++    REPORTS_DIR=/mnt/c/Users/<bạn>/KetQuaKiemTra
+diff --git a/pyproject.toml b/pyproject.toml
+index 6a7f165..a58bbd6 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -12,18 +12,19 @@ dependencies = [
+     "onnxruntime-gpu>=1.26.0",
+     "opencv-python>=4.13.0.92",
+     "pydantic>=2.0",
+     "python-dotenv>=1.2.2",
+     "uvicorn[standard]>=0.30.0",
+ ]
+ 
+ [project.optional-dependencies]
+ gui = [
+     "qrcode>=8.2",
++    "weasyprint>=62.0",
+ ]
+ 
+ [build-system]
+ requires = ["setuptools>=68"]
+ build-backend = "setuptools.build_meta"
+ 
+ [tool.setuptools.packages.find]
+ include = ["drag_conveyor*"]
+diff --git a/server/report.py b/server/report.py
+index aaa36ba..e684443 100644
+--- a/server/report.py
++++ b/server/report.py
+@@ -1,16 +1,17 @@
+ from __future__ import annotations
+ 
+ import html as _html
+ import re
+ from datetime import datetime, timedelta, timezone
+ from pathlib import Path
++from typing import Callable
+ 
+ _TZ_ICT = timezone(timedelta(hours=7))
+ _REPORT_CSS = (Path(__file__).parent / "report.css").read_text(encoding="utf-8")
+ 
+ _SECTION_LABELS = {
+     "bent_left": "Biến dạng bên trái",
+     "bent_right": "Biến dạng bên phải",
+     "bent_both": "Biến dạng 2 bên",
+     "broken": "Gãy",
+ }
+@@ -131,10 +132,48 @@ def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | N
+     <div class="box"><div class="lbl">Ngày & giờ kiểm tra</div><div class="val">{esc(meta['datetime_str'])}</div></div>
+     <div class="box"><div class="lbl">Tên máy</div><div class="val">{esc(meta['conveyor_name'])}</div></div>
+   </div>
+   <div class="stats">
+     <div class="card green"><div class="num">{report_data['total_bars']}</div><div class="lbl">Tổng số cánh đã kiểm tra</div></div>
+     <div class="card orange"><div class="num">{report_data['defect_count']}</div><div class="lbl">Tổng số cánh lỗi</div></div>
+     <div class="card blue"><div class="num">{report_data['defect_rate']:.1f}%</div><div class="lbl">Tỷ lệ lỗi</div></div>
+   </div>
+   {body_sections}
+ </body></html>"""
++
++
++def render_pdf(html: str) -> bytes:
++    from weasyprint import HTML  # lazy: avoid import cost / system-lib requirement at module load
++    return HTML(string=html).write_pdf()
++
++
++def _image_data_uri(data: bytes) -> str:
++    import base64
++    return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
++
++
++def save_report(summary, corrections, meta, job_id, created_at_iso, reports_dir,
++                fetch_image: "Callable[[str], bytes | None]") -> str:
++    report_data = build_report_data(summary, corrections)
++
++    images_by_track: dict[int, str | None] = {}
++    for bars in report_data["defects_by_type"].values():
++        for bar in bars:
++            key = bar.get("snapshot_key")
++            data = fetch_image(key) if key else None
++            images_by_track[int(bar["track_id"])] = _image_data_uri(data) if data else None
++
++    html = build_html(report_data, meta, images_by_track)
++    pdf_bytes = render_pdf(html)
++
++    reports_dir = Path(reports_dir)
++    reports_dir.mkdir(parents=True, exist_ok=True)
++    base = report_filename(meta["conveyor_name"], created_at_iso, job_id)
++    target = reports_dir / base
++    if target.exists():
++        stem, suffix = base[:-4], ".pdf"
++        i = 2
++        while (reports_dir / f"{stem}_{i}{suffix}").exists():
++            i += 1
++        target = reports_dir / f"{stem}_{i}{suffix}"
++    target.write_bytes(pdf_bytes)
++    return target.name
+diff --git a/tests/test_report_save.py b/tests/test_report_save.py
+new file mode 100644
+index 0000000..0b4cf2f
+--- /dev/null
++++ b/tests/test_report_save.py
+@@ -0,0 +1,74 @@
++from __future__ import annotations
++
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest import mock
++
++ROOT = Path(__file__).resolve().parents[1]
++SERVER_DIR = ROOT / "server"
++if str(SERVER_DIR) not in sys.path:
++    sys.path.insert(0, str(SERVER_DIR))
++
++import report  # noqa: E402
++
++
++def _weasyprint_available() -> bool:
++    try:
++        import weasyprint  # noqa: F401
++        return True
++    except Exception:
++        return False
++
++
++def _summary() -> dict:
++    return {
++        "total_bars": 4,
++        "defects": [{"track_id": 1, "defect_type": "bent_left", "snapshot_key": "results/j/d/a.jpg"}],
++        "normals": [{"track_id": 2, "snapshot_key": "results/j/n/b.jpg"}],
++    }
++
++
++_META = {"inspector_name": "A", "conveyor_name": "M515A", "datetime_str": "11/06/2026 · 18:47"}
++
++
++class ReportSaveTests(unittest.TestCase):
++    def test_save_writes_pdf_and_returns_filename(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            with mock.patch.object(report, "render_pdf", return_value=b"%PDF-1.7 fake"):
++                name = report.save_report(
++                    summary=_summary(), corrections=[], meta=_META, job_id="job123",
++                    created_at_iso="2026-06-11T11:47:00+00:00", reports_dir=Path(tmp),
++                    fetch_image=lambda key: b"img",
++                )
++            self.assertEqual(name, "XT-100_M515A_20260611_1847_job123.pdf")
++            saved = Path(tmp) / name
++            self.assertTrue(saved.exists())
++            self.assertTrue(saved.read_bytes().startswith(b"%PDF"))
++
++    def test_save_dedupes_on_collision(self) -> None:
++        with tempfile.TemporaryDirectory() as tmp:
++            with mock.patch.object(report, "render_pdf", return_value=b"%PDF x"):
++                n1 = report.save_report(_summary(), [], _META, "job123",
++                                        "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
++                n2 = report.save_report(_summary(), [], _META, "job123",
++                                        "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
++            self.assertNotEqual(n1, n2)
++            self.assertTrue(n2.endswith("_2.pdf"))
++
++    def test_save_propagates_report_error(self) -> None:
++        s = _summary()
++        s["defects"].append({"track_id": 9, "defect_type": "other", "snapshot_key": "results/j/x.jpg"})
++        with tempfile.TemporaryDirectory() as tmp:
++            with self.assertRaises(report.ReportError):
++                report.save_report(s, [], _META, "j", "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
++
++    @unittest.skipUnless(_weasyprint_available(), "WeasyPrint + system libs not installed")
++    def test_render_pdf_smoke(self) -> None:
++        pdf = report.render_pdf("<html><body><h1>hi</h1></body></html>")
++        self.assertTrue(pdf.startswith(b"%PDF"))
++
++
++if __name__ == "__main__":
++    unittest.main()

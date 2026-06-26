@@ -64,6 +64,11 @@ def download_file(object_key: str, dest: Path) -> None:
     _client().download_file(settings.R2_BUCKET_NAME, object_key, str(dest))
 
 
+def download_bytes(object_key: str) -> bytes:
+    resp = _client().get_object(Bucket=settings.R2_BUCKET_NAME, Key=object_key)
+    return resp["Body"].read()
+
+
 def upload_file(local_path: Path, object_key: str, content_type: str = "application/octet-stream") -> None:
     _client().upload_file(
         str(local_path),
