@@ -38,11 +38,11 @@ class ReportSaveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(report, "render_pdf", return_value=b"%PDF-1.7 fake"):
                 name = report.save_report(
-                    summary=_summary(), corrections=[], meta=_META, job_id="job123",
-                    created_at_iso="2026-06-11T11:47:00+00:00", reports_dir=Path(tmp),
+                    summary=_summary(), corrections=[], meta=_META, reports_dir=Path(tmp),
                     fetch_image=lambda key: b"img",
+                    exported_at_iso="2026-06-11T11:47:00+00:00",
                 )
-            self.assertEqual(name, "XT-100_M515A_20260611_1847_job123.pdf")
+            self.assertEqual(name, "20260611_184700_M515A.pdf")
             saved = Path(tmp) / name
             self.assertTrue(saved.exists())
             self.assertTrue(saved.read_bytes().startswith(b"%PDF"))
@@ -50,10 +50,10 @@ class ReportSaveTests(unittest.TestCase):
     def test_save_dedupes_on_collision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(report, "render_pdf", return_value=b"%PDF x"):
-                n1 = report.save_report(_summary(), [], _META, "job123",
-                                        "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
-                n2 = report.save_report(_summary(), [], _META, "job123",
-                                        "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
+                n1 = report.save_report(_summary(), [], _META, Path(tmp), lambda k: None,
+                                        exported_at_iso="2026-06-11T11:47:00+00:00")
+                n2 = report.save_report(_summary(), [], _META, Path(tmp), lambda k: None,
+                                        exported_at_iso="2026-06-11T11:47:00+00:00")
             self.assertNotEqual(n1, n2)
             self.assertTrue(n2.endswith("_2.pdf"))
 
@@ -62,7 +62,8 @@ class ReportSaveTests(unittest.TestCase):
         s["defects"].append({"track_id": 9, "defect_type": "other", "snapshot_key": "results/j/x.jpg"})
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(report.ReportError):
-                report.save_report(s, [], _META, "j", "2026-06-11T11:47:00+00:00", Path(tmp), lambda k: None)
+                report.save_report(s, [], _META, Path(tmp), lambda k: None,
+                                   exported_at_iso="2026-06-11T11:47:00+00:00")
 
     @unittest.skipUnless(_weasyprint_available(), "WeasyPrint + system libs not installed")
     def test_render_pdf_smoke(self) -> None:

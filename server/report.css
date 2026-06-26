@@ -3,7 +3,8 @@
 body { font-family: "DejaVu Sans", sans-serif; color: #1f2937; font-size: 11px; margin: 0; }
 .hdr { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #166534; padding-bottom: 8px; }
 .hdr .company { font-size: 15px; font-weight: 700; color: #166534; }
-.hdr .branch { font-size: 10px; color: #6b7280; }
+.hdr .branch { font-size: 11px; color: #374151; font-weight: 600; }
+.hdr .dept { font-size: 9px; color: #6b7280; }
 .hdr .code { text-align: right; font-size: 10px; color: #6b7280; }
 .title { text-align: center; font-size: 22px; font-weight: 800; letter-spacing: 1px; margin: 14px 0 2px; }
 .subtitle { text-align: center; color: #166534; font-size: 11px; margin-bottom: 14px; }

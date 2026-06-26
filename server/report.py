@@ -21,8 +21,9 @@ _SECTION_LABELS = {
     "broken": "Gãy",
 }
 
-_COMPANY = "CÔNG TY CỔ PHẦN C.P. VIỆT NAM"
-_BRANCH = "Chi nhánh Xuân Mai – Hà Nội • Phòng Kỹ Thuật"
+_COMPANY = "CÔNG TY CỔ PHẦN CHĂN NUÔI C.P. VIỆT NAM"
+_BRANCH = "Chi nhánh Xuân Mai – Hà Nội"
+_DEPARTMENT = "Phòng Kỹ Thuật"
 
 ALLOWED_DEFECT_TYPES: tuple[str, ...] = ("bent_left", "bent_right", "bent_both", "broken")
 ALLOWED_CORRECTION_TYPES: tuple[str, ...] = ALLOWED_DEFECT_TYPES + ("normal",)
@@ -93,12 +94,14 @@ def sanitize_filename_part(name: str) -> str:
     return cleaned or "x"
 
 
-def report_filename(conveyor_name: str, created_at_iso: str, job_id: str) -> str:
-    dt = datetime.fromisoformat(created_at_iso)
+def report_filename(conveyor_name: str, exported_at_iso: str) -> str:
+    """Name = export timestamp + inspected machine name, e.g.
+    ``20260625_143052_M515A.pdf``. Collisions are resolved by save_report."""
+    dt = datetime.fromisoformat(exported_at_iso)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    stamp = dt.astimezone(_TZ_ICT).strftime("%Y%m%d_%H%M")
-    return f"XT-100_{sanitize_filename_part(conveyor_name)}_{stamp}_{job_id}.pdf"
+    stamp = dt.astimezone(_TZ_ICT).strftime("%Y%m%d_%H%M%S")
+    return f"{stamp}_{sanitize_filename_part(conveyor_name)}.pdf"
 
 
 def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | None],
@@ -127,7 +130,7 @@ def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | N
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{_report_css()}</style></head>
 <body>
   <div class="hdr">
-    <div>{logo}<div class="company">{esc(_COMPANY)}</div><div class="branch">{esc(_BRANCH)}</div></div>
+    <div>{logo}<div class="company">{esc(_COMPANY)}</div><div class="branch">{esc(_BRANCH)}</div><div class="dept">{esc(_DEPARTMENT)}</div></div>
     <div class="code"><b>PHIẾU KT</b><br>Mã: XT-100</div>
   </div>
   <div class="title">PHIẾU KIỂM TRA XÍCH TẢI</div>
@@ -156,8 +159,11 @@ def _image_data_uri(data: bytes) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(data).decode("ascii")
 
 
-def save_report(summary, corrections, meta, job_id, created_at_iso, reports_dir,
-                fetch_image: "Callable[[str], bytes | None]") -> str:
+def save_report(summary, corrections, meta, reports_dir,
+                fetch_image: "Callable[[str], bytes | None]",
+                exported_at_iso: str | None = None) -> str:
+    if exported_at_iso is None:
+        exported_at_iso = datetime.now(timezone.utc).isoformat()
     report_data = build_report_data(summary, corrections)
 
     images_by_track: dict[int, str | None] = {}
@@ -172,7 +178,7 @@ def save_report(summary, corrections, meta, job_id, created_at_iso, reports_dir,
 
     reports_dir = Path(reports_dir)
     reports_dir.mkdir(parents=True, exist_ok=True)
-    base = report_filename(meta["conveyor_name"], created_at_iso, job_id)
+    base = report_filename(meta["conveyor_name"], exported_at_iso)
     target = reports_dir / base
     if target.exists():
         stem, suffix = base[:-4], ".pdf"

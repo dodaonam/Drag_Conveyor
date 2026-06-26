@@ -317,12 +317,12 @@ class ProfileRulesTests(unittest.TestCase):
         # Rule nhạy hơn ở "chữ ký" cong: bắt thanh hơi ngắn (p5) và hơi rộng (p95).
         self.assertEqual(auto.length_lower_percentile, "p5")
         self.assertEqual(auto.width_upper_percentile, "p95")
-        # Deadband vẫn 0 (không nén tín hiệu cong nhẹ); VLM là bộ lọc false positive.
+        # Deadband vẫn 0 (không nén tín hiệu cong nhẹ).
         self.assertEqual(policy.deadband_ratio, 0.0)
         self.assertEqual(policy.deadband_floor, 0.0)
-        # can_mark_normal là núm vận hành (bật/tắt bộ lọc VLM) — chỉ kiểm tra parse được.
+        # VLM bật để gán loại lỗi, nhưng KHÔNG được lật thanh về normal (can_mark_normal=False).
         self.assertIsNotNone(profile.inspection.vlm)
-        self.assertTrue(profile.inspection.vlm.can_mark_normal)
+        self.assertFalse(profile.inspection.vlm.can_mark_normal)
         # Với deadband 0, tolerance = 0 (ngưỡng quyết định == ngưỡng thô).
         engine = RuleEngine()
         calibration = _calibration_result()

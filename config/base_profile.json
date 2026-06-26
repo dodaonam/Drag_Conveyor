@@ -107,7 +107,7 @@
     },
     "vlm": {
       "model": "gpt-5.4",
-      "can_mark_normal": true
+      "can_mark_normal": false
     }
   }
 }

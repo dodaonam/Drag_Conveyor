@@ -341,8 +341,6 @@ def save_report(job_id: str, body: ReportIn) -> dict[str, Any]:
             summary=summary,
             corrections=[c.model_dump() for c in body.corrections],
             meta=meta,
-            job_id=job_id,
-            created_at_iso=row["created_at"],
             reports_dir=settings.REPORTS_DIR,
             fetch_image=fetch_image,
         )

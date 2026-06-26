@@ -81,6 +81,30 @@ body {
   gap: 14px;
 }
 
+/* Floating "scroll to top" button (result screen) */
+.scroll-top-btn {
+  position: fixed;
+  right: 16px;
+  bottom: calc(18px + var(--safe-bottom));
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: none;
+  background: var(--blue);
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  box-shadow: 0 3px 12px rgba(15, 23, 42, .32);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+.scroll-top-btn.show {
+  display: flex;
+}
+
 .body-center {
   justify-content: center;
   align-items: center;

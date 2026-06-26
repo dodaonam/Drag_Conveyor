@@ -28,10 +28,6 @@
             <input type="text" id="inp-inspector" placeholder="Nhập tên người kiểm tra" autocomplete="name">
           </div>
           <div style="margin-bottom:14px">
-            <label class="lbl" for="inp-conveyor">Băng chuyền</label>
-            <input type="text" id="inp-conveyor" placeholder="Nhập tên băng chuyền" autocomplete="off">
-          </div>
-          <div style="margin-bottom:14px">
             <label class="lbl" for="inp-token">Mã truy cập</label>
             <input type="password" id="inp-token" placeholder="Nhập mã truy cập" autocomplete="current-password">
           </div>
@@ -56,6 +52,12 @@
     <div class="body">
       <div class="shell setup-grid">
         <div class="setup-side">
+
+          <!-- Band / machine name (re-entered each inspection) -->
+          <div class="card">
+            <label class="lbl" for="inp-conveyor">Tên băng / máy</label>
+            <input type="text" id="inp-conveyor" placeholder="Nhập tên băng / máy" autocomplete="off">
+          </div>
 
           <!-- Video picker -->
           <div class="card">
@@ -187,6 +189,7 @@
         </div>
       </div>
     </div>
+    <button id="btn-scroll-top" class="scroll-top-btn" type="button" aria-label="Lên đầu trang">↑</button>
   </div>
 
   <div id="lightbox" class="lightbox" aria-hidden="true">

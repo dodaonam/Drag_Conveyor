@@ -94,7 +94,9 @@ a false positive, so the bar must be CONVINCINGLY healthy before you clear it.
 
 ### WHEN TO RETURN "normal" (strict — all must hold)
 Return "normal" ONLY when EVERY one of these is true, with positive visual evidence:
-  1. The bar is a single straight, continuous horizontal line spanning the full width.
+  1. The bar is a single straight, continuous horizontal line that spans the FULL width of the
+     conveyor — its LEFT wing reaches the left side and its RIGHT wing reaches the right side.
+     BOTH wings must be physically present and full-length.
   2. BOTH wings are level and horizontal — no downward curve, droop, sag, dip, or tilt on either
      side, not even slight.
   3. No crack, fracture, notch, bite, or missing piece anywhere on the bar.
@@ -102,9 +104,17 @@ Return "normal" ONLY when EVERY one of these is true, with positive visual evide
 "normal" requires PROOF the bar is healthy — not merely the absence of an obvious defect.
 
 ### WHEN YOU MUST KEEP THE DEFECT (do NOT return "normal")
+  - HALF A BAR / MISSING WING — THIS IS THE #1 CASE TO CATCH. If the bar does NOT reach BOTH sides
+    of the conveyor — one wing is missing, snapped off, ends partway, or only about half the bar is
+    present — it is "broken", NEVER "normal". A short stub whose remaining portion looks perfectly
+    straight and horizontal is STILL BROKEN. Being straight only earns "normal" when the bar is also
+    FULL-LENGTH on both sides. Do not be fooled by a clean, straight half.
+  - If the measurement hint says the bar is "too short", treat that shortness as evidence that a
+    wing is missing (broken) or the bar is bent — it is a reason to KEEP the defect, not to clear
+    it. A markedly shortened bar is essentially never "normal".
   - A SLIGHT, SUBTLE, or PARTIAL bend is STILL A DEFECT. If a wing is even mildly curved, drooping,
     tilted, or off-horizontal — however small — classify it as bent_left / bent_right / bent_both.
-    Do NOT clear it to "normal". This is the most common mistake — avoid it.
+    Do NOT clear it to "normal".
   - Any visible asymmetry between the two wings, or a wing that is not perfectly horizontal.
   - The image is blurry, dark, low-contrast, or the bar is partially occluded → keep the defect
     (use "other" if you cannot determine the type). Uncertainty NEVER becomes "normal".

@@ -15,6 +15,7 @@ from path_bootstrap import ensure_repo_root_on_path
 ensure_repo_root_on_path()
 
 import db
+import preprocess
 import r2
 import settings
 
@@ -118,8 +119,22 @@ def _process_job(job_id: str) -> None:
         cap.release()
         LOGGER.info("[%s] Video OK: %d frames", job_id, total_frames)
 
-        # 3. Load base profile and apply client ROI
+        # 2.5 Slow the conveyor down before inference (interpolated frames) so each
+        #     bar moves less per frame → more stable tracking. Falls back to the
+        #     original video if preprocessing fails for any reason.
         db.update_status(job_id, "processing", db.now())
+        inference_source = video_path
+        if preprocess.SLOWDOWN_FACTOR < 1.0:
+            try:
+                slow_path = temp_job_dir / "slowmo.mp4"
+                preprocess.slow_down_video(video_path, slow_path)
+                inference_source = slow_path
+                LOGGER.info("[%s] Slow-motion applied (%.2fx)", job_id, preprocess.SLOWDOWN_FACTOR)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("[%s] Slow-motion preprocessing failed, using original: %s", job_id, exc)
+                inference_source = video_path
+
+        # 3. Load base profile and apply client ROI
         profile = load_profile(settings.BASE_PROFILE_PATH)
         inspection_mode = str(row["inspection_mode"] or profile.inspection.mode)
         profile = profile.with_roi(roi_config)
@@ -128,7 +143,7 @@ def _process_job(job_id: str) -> None:
         LOGGER.info("[%s] Starting inspection", job_id)
         result = run_batch_inspection(
             profile=profile,
-            source=str(video_path),
+            source=str(inference_source),
             run_id=job_id,
             snapshots_root=temp_job_dir / "snapshots",
             inspection_mode=inspection_mode,

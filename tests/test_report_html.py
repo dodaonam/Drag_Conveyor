@@ -21,8 +21,9 @@ class ReportHtmlTests(unittest.TestCase):
         self.assertEqual(report.sanitize_filename_part("Băng / 1"), "Bang_1")
 
     def test_report_filename(self) -> None:
-        name = report.report_filename("M515A", "2026-06-11T11:47:00+00:00", "job123")
-        self.assertEqual(name, "XT-100_M515A_20260611_1847_job123.pdf")
+        # export time (ICT) + machine name
+        name = report.report_filename("M515A", "2026-06-11T11:47:00+00:00")
+        self.assertEqual(name, "20260611_184700_M515A.pdf")
 
     def test_build_html_contains_sections_and_totals(self) -> None:
         data = {

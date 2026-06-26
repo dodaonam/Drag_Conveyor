@@ -4,7 +4,7 @@
 const G = {
   token: localStorage.getItem('dc_token') || '',
   inspector: localStorage.getItem('dc_inspector') || '',
-  conveyor: localStorage.getItem('dc_conveyor') || '',
+  conveyor: '',   // entered per-inspection on the setup screen, not persisted
   jobId: null,
   putUrl: null,
   file: null,
@@ -90,11 +90,9 @@ function setErr(id, msg) {
 ═══════════════════════════════════════════════════════════════════ */
 document.getElementById('btn-login').addEventListener('click', async () => {
   const inspector = document.getElementById('inp-inspector').value.trim();
-  const conveyor  = document.getElementById('inp-conveyor').value.trim();
   const token     = document.getElementById('inp-token').value.trim();
   setErr('err-login', '');
   if (!inspector) { setErr('err-login', 'Vui lòng nhập tên người kiểm tra'); return; }
-  if (!conveyor)  { setErr('err-login', 'Vui lòng nhập tên băng chuyền'); return; }
   if (!token)     { setErr('err-login', 'Vui lòng nhập mã truy cập'); return; }
   G.token = token;
   try {
@@ -102,10 +100,8 @@ document.getElementById('btn-login').addEventListener('click', async () => {
     if (res.status === 401) { setErr('err-login', 'Mã truy cập không đúng'); return; }
   } catch (_) { /* network error — proceed */ }
   G.inspector = inspector;
-  G.conveyor  = conveyor;
   localStorage.setItem('dc_token', token);
   localStorage.setItem('dc_inspector', inspector);
-  localStorage.setItem('dc_conveyor', conveyor);
   updateSessionInfo();
   try {
     await loadRuntimeConfig();
@@ -126,7 +122,6 @@ document.getElementById('inp-token').addEventListener('keydown', e => {
 document.getElementById('btn-logout').addEventListener('click', () => {
   localStorage.removeItem('dc_token');
   localStorage.removeItem('dc_inspector');
-  localStorage.removeItem('dc_conveyor');
   G.token = ''; G.inspector = ''; G.conveyor = '';
   updateSessionInfo();
   show('s-login');
@@ -450,9 +445,13 @@ function toVideo(roi) {
 ═══════════════════════════════════════════════════════════════════ */
 document.getElementById('btn-submit').addEventListener('click', async () => {
   setErr('err-setup', '');
+  const conveyor = document.getElementById('inp-conveyor').value.trim();
+  if (!conveyor) { setErr('err-setup', 'Vui lòng nhập tên băng / máy'); return; }
   if (!G.file) { setErr('err-setup', 'Chưa chọn video'); return; }
   if (!G.roi || !isRoiValid()) { setErr('err-setup', 'Chưa chọn vùng kiểm tra, hoặc vùng quá nhỏ'); return; }
   if (G.roiMode !== 'locked') { setErr('err-setup', 'Vui lòng bấm ✓ để xác nhận vùng kiểm tra trước khi bắt đầu.'); return; }
+  G.conveyor = conveyor;
+  updateSessionInfo();
 
   const mime = getMime(G.file);
   if (!mime) { setErr('err-setup', 'Định dạng video không được hỗ trợ (mp4/mov/webm)'); return; }
@@ -595,6 +594,9 @@ function defectSubtabKey(d) {
 async function loadResult() {
   const data = await api('/api/jobs/' + G.jobId + '/result');
   show('s-result');
+  resetSaveButton();
+  window.scrollTo(0, 0);
+  updateScrollTopBtn();
 
   document.getElementById('stat-grid').innerHTML =
     statBox(data.total_bars, 'Tổng thanh', '') +
@@ -759,6 +761,16 @@ function setSaveMsg(text, isErr) {
   el.classList.toggle('err', !!isErr);
 }
 
+function resetSaveButton() {
+  const btn = document.getElementById('btn-save-report');
+  btn.disabled = false;
+  btn.textContent = 'Lưu kết quả';
+  const el = document.getElementById('msg-save');
+  el.style.display = 'none';
+  el.textContent = '';
+  el.classList.remove('err');
+}
+
 async function saveReport() {
   if (hasUnclassified()) {
     setSaveMsg('Còn thanh chưa phân loại — hãy phân loại hết (trái/phải/2 bên/gãy) hoặc đánh dấu bình thường trước khi lưu.', true);
@@ -787,6 +799,27 @@ async function saveReport() {
 
 document.getElementById('btn-save-report').addEventListener('click', saveReport);
 
+/* ── Scroll-to-top button (result screen, works for both galleries) ───────── */
+const _scrollTopBtn = document.getElementById('btn-scroll-top');
+function _pageScrollTop() {
+  return window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+}
+function _onResultScreen() {
+  return document.getElementById('s-result').style.display !== 'none';
+}
+function updateScrollTopBtn() {
+  if (!_scrollTopBtn) return;
+  _scrollTopBtn.classList.toggle('show', _onResultScreen() && _pageScrollTop() > 300);
+}
+if (_scrollTopBtn) {
+  // The page (window) scrolls — the .s screens use min-height:100svh, so content
+  // taller than the viewport scrolls the document, not the inner .body.
+  window.addEventListener('scroll', updateScrollTopBtn, { passive: true });
+  _scrollTopBtn.addEventListener('click', () => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
 function switchTab(tab) {
   G.activeTab = tab;
   ['defect', 'normal'].forEach(t => {
@@ -799,6 +832,7 @@ function switchTab(tab) {
   }));
   G.lightboxItems = tab === 'defect' ? G.defectLightboxItems : G.normalLightboxItems;
   G.lightboxIndex = -1;
+  updateScrollTopBtn();
 }
 
 function statBox(n, lbl, cls) {
@@ -809,11 +843,15 @@ document.getElementById('btn-new-job').addEventListener('click', () => {
   G.jobId = null; G.putUrl = null; G.file = null;
   G.roi = null; G.frameOk = false; G.roiMode = 'locked';
   G.dragStart = null;
+  G.conveyor = '';
   canvas.classList.remove('editing');
   document.getElementById('inp-video').value = '';
+  document.getElementById('inp-conveyor').value = '';   // re-enter band each inspection
   document.getElementById('roi-section').style.display = 'none';
   document.getElementById('video-name').style.display = 'none';
   setErr('err-setup', '');
+  resetSaveButton();
+  updateSessionInfo();
   updateRoiControls();
   show('s-setup');
 });
@@ -895,7 +933,6 @@ document.addEventListener('keydown', e => {
 async function init() {
   updateRoiControls();
   if (G.inspector) document.getElementById('inp-inspector').value = G.inspector;
-  if (G.conveyor)  document.getElementById('inp-conveyor').value  = G.conveyor;
   if (!G.token) {
     show('s-login');
     return;
