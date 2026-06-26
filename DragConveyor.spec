@@ -52,6 +52,9 @@ a = Analysis(
         "uvicorn.protocols.websockets.websockets_impl",
         "uvicorn.lifespan",
         "uvicorn.lifespan.on",
+        # sqlite3 — stdlib nhưng PyInstaller không tự bundle C extension
+        "sqlite3",
+        "_sqlite3",
         # anyio asyncio backend (dùng bởi starlette/fastapi)
         "anyio._backends._asyncio",
         # fastapi + starlette + pydantic — server/main.py là data file nên PyInstaller
