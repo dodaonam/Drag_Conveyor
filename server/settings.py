@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from path_bootstrap import RUNTIME_DIR
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -25,7 +26,7 @@ API_AUTH_TOKEN = _req("API_AUTH_TOKEN")
 _SERVER_DIR = Path(__file__).parent
 
 BASE_PROFILE_PATH = (_SERVER_DIR / os.environ.get("BASE_PROFILE_PATH", "../config/base_profile.json")).resolve()
-TEMP_DIR = (_SERVER_DIR / os.environ.get("TEMP_DIR", "runtime/temp")).resolve()
+TEMP_DIR = Path(os.environ.get("TEMP_DIR", str(RUNTIME_DIR / "temp"))).resolve()
 
 MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 209_715_200))
 MAX_JOB_DURATION_SECONDS: int = int(os.environ.get("MAX_JOB_DURATION_SECONDS", 900))
@@ -37,5 +38,5 @@ DELETE_VIDEO_AFTER_SUCCESS: bool = (
 )
 
 REPORTS_DIR = Path(
-    os.environ.get("REPORTS_DIR", str(_SERVER_DIR / "runtime" / "reports"))
+    os.environ.get("REPORTS_DIR", str(RUNTIME_DIR / "reports"))
 ).resolve()

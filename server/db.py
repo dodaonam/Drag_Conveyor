@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator
 
-DB_PATH = Path(__file__).parent / "jobs.db"
+from path_bootstrap import RUNTIME_DIR
+
+DB_PATH = RUNTIME_DIR / "jobs.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (

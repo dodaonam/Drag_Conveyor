@@ -17,7 +17,7 @@ from .schema import DefectReason, make_openai_llm
 
 LOGGER = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gpt-4o-mini"
+_DEFAULT_MODEL = "gpt-5.4"
 _EXAMPLE_LABELS = set(get_args(DefectReason.model_fields["defect_type"].annotation))
 _EXAMPLES_DIR = Path(__file__).resolve().parents[2] / "data" / "example"
 

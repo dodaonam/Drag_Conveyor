@@ -4,7 +4,6 @@
     "path": "weights/model_imgsz_640/best.onnx",
     "backend": "onnxruntime",
     "providers": [
-      "CUDAExecutionProvider",
       "CPUExecutionProvider"
     ],
     "task": "segmentation",

@@ -150,8 +150,16 @@ def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | N
 
 
 def render_pdf(html: str) -> bytes:
-    from weasyprint import HTML  # lazy: avoid import cost / system-lib requirement at module load
-    return HTML(string=html).write_pdf()
+    import sys
+    import pdfkit
+    if getattr(sys, "frozen", False):
+        from pathlib import Path as _Path
+        cfg = pdfkit.configuration(wkhtmltopdf=str(_Path(sys.executable).parent / "bin" / "wkhtmltopdf.exe"))
+    else:
+        cfg = pdfkit.configuration()
+    return pdfkit.from_string(html, False, configuration=cfg,
+                              options={"encoding": "UTF-8", "no-outline": None,
+                                       "background": None, "image-quality": "100"})
 
 
 def _image_data_uri(data: bytes) -> str:
