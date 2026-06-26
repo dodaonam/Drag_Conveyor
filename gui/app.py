@@ -29,24 +29,26 @@ LOG_PATH = _ROOT / "runtime" / "gui.log"
 _TUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 _LOCAL_SERVER_URL = "http://127.0.0.1:8001/"
 _LOCAL_SERVER_START_TIMEOUT_S = 10.0
-_LOCAL_SERVER_POLL_INTERVAL_S = 0.25
+_PUBLIC_TUNNEL_START_TIMEOUT_S = 15.0
+_POLL_INTERVAL_S = 0.25
+_RESTART_DELAY_S = 1.0
 
 # (label, config_key, env_var, is_secret, required)
 FIELDS: list[tuple[str, str, str, bool, bool]] = [
-    ("R2 Endpoint URL", "r2_endpoint_url", "R2_ENDPOINT_URL", False, True),
+    ("Địa chỉ R2 Endpoint", "r2_endpoint_url", "R2_ENDPOINT_URL", False, True),
     ("R2 Access Key ID", "r2_access_key_id", "R2_ACCESS_KEY_ID", False, True),
     ("R2 Secret Access Key", "r2_secret_access_key", "R2_SECRET_ACCESS_KEY", True, True),
-    ("R2 Bucket Name", "r2_bucket_name", "R2_BUCKET_NAME", False, True),
-    ("API Auth Token", "api_auth_token", "API_AUTH_TOKEN", True, True),
+    ("Tên bucket R2", "r2_bucket_name", "R2_BUCKET_NAME", False, True),
+    ("Mã truy cập API", "api_auth_token", "API_AUTH_TOKEN", True, True),
     ("OpenAI API Key", "openai_api_key", "OPENAI_API_KEY", True, False),
-    ("Reports Folder", "reports_dir", "REPORTS_DIR", False, False),
+    ("Thư mục lưu báo cáo", "reports_dir", "REPORTS_DIR", False, False),
 ]
 
 
 class SetupApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Drag Conveyor - Setup")
+        self.title("Thiết lập Drag Conveyor")
         self.resizable(False, False)
         self._tunnel_proc: subprocess.Popen | None = None
         self._uvicorn_server = None
@@ -60,13 +62,13 @@ class SetupApp(tk.Tk):
     def _build_ui(self) -> None:
         pad = {"padx": 16, "pady": 5}
 
-        tk.Label(self, text="Drag Conveyor Setup", font=("Segoe UI", 13, "bold")).grid(
+        tk.Label(self, text="Thiết lập Drag Conveyor", font=("Segoe UI", 13, "bold")).grid(
             row=0, column=0, columnspan=2, pady=(16, 10), padx=16
         )
 
         for i, (label, key, _, secret, required) in enumerate(FIELDS):
             row = i + 1
-            display = label if required else f"{label}  (optional)"
+            display = label if required else f"{label}  (không bắt buộc)"
             tk.Label(self, text=display, anchor="w", font=("Segoe UI", 9)).grid(
                 row=row, column=0, sticky="w", **pad
             )
@@ -80,7 +82,7 @@ class SetupApp(tk.Tk):
                 )
                 tk.Button(
                     cell,
-                    text="Browse...",
+                    text="Chọn...",
                     command=lambda v=var: self._browse_dir(v),
                 ).pack(side="left", padx=(6, 0))
             else:
@@ -100,34 +102,57 @@ class SetupApp(tk.Tk):
         btn_row = sep_row + 1
         btn_frame = tk.Frame(self)
         btn_frame.grid(row=btn_row, column=0, columnspan=2, pady=(0, 6))
-        tk.Button(btn_frame, text="Save", width=10, command=self._save).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="Lưu cấu hình", width=12, command=self._save).pack(
+            side="left", padx=4
+        )
         self._start_btn = tk.Button(
             btn_frame,
-            text="Start Server",
-            width=14,
+            text="Khởi động",
+            width=12,
             command=self._start,
         )
         self._start_btn.pack(side="left", padx=4)
+        self._restart_btn = tk.Button(
+            btn_frame,
+            text="Khởi động lại",
+            width=12,
+            command=self._restart,
+            state="disabled",
+        )
+        self._restart_btn.pack(side="left", padx=4)
         self._stop_btn = tk.Button(
             btn_frame,
-            text="Stop",
+            text="Dừng",
             width=10,
             command=self._stop,
             state="disabled",
         )
         self._stop_btn.pack(side="left", padx=4)
 
-        self._status_var = tk.StringVar(value="Server not running")
+        self._status_var = tk.StringVar(value="Máy chủ chưa chạy")
         self._status_lbl = tk.Label(
             self,
             textvariable=self._status_var,
             font=("Segoe UI", 9),
             fg="#888888",
+            wraplength=420,
+            justify="left",
         )
-        self._status_lbl.grid(row=btn_row + 1, column=0, columnspan=2, pady=(0, 6))
+        self._status_lbl.grid(row=btn_row + 1, column=0, columnspan=2, pady=(0, 6), padx=16)
+
+        self._detail_var = tk.StringVar(value="")
+        self._detail_lbl = tk.Label(
+            self,
+            textvariable=self._detail_var,
+            font=("Segoe UI", 8),
+            fg="#666666",
+            wraplength=420,
+            justify="left",
+        )
+        self._detail_lbl.grid(row=btn_row + 2, column=0, columnspan=2, pady=(0, 6), padx=16)
 
         self._qr_canvas = tk.Canvas(self, bg="white", highlightthickness=0)
-        self._qr_canvas.grid(row=btn_row + 2, column=0, columnspan=2, pady=(0, 14))
+        self._qr_canvas.grid(row=btn_row + 3, column=0, columnspan=2, pady=(0, 14))
         self._qr_canvas.grid_remove()
 
     def _load(self) -> None:
@@ -164,7 +189,7 @@ class SetupApp(tk.Tk):
         ]
         if missing:
             messagebox.showerror(
-                "Missing fields",
+                "Thiếu cấu hình",
                 "Điền đầy đủ các trường bắt buộc:\n" + "\n".join(f"- {name}" for name in missing),
             )
             return False
@@ -179,7 +204,7 @@ class SetupApp(tk.Tk):
         if not self._validate(data):
             return
         self._write_config(data)
-        messagebox.showinfo("Saved", "Cấu hình đã lưu.")
+        messagebox.showinfo("Đã lưu", "Cấu hình đã được lưu.")
 
     def _build_env(self, data: dict[str, str]) -> dict[str, str]:
         env = os.environ.copy()
@@ -200,10 +225,25 @@ class SetupApp(tk.Tk):
         self._uvicorn_error = None
         self._set_status("starting_server")
         self._start_btn.config(state="disabled")
+        self._restart_btn.config(state="disabled")
         self._stop_btn.config(state="normal")
+        self._qr_canvas.grid_remove()
 
         threading.Thread(target=self._run_uvicorn, daemon=True).start()
         threading.Thread(target=self._start_tunnel_when_server_ready, daemon=True).start()
+
+    def _restart(self) -> None:
+        self._set_status("restarting")
+        self._start_btn.config(state="disabled")
+        self._restart_btn.config(state="disabled")
+        self._stop_btn.config(state="disabled")
+        threading.Thread(target=self._restart_worker, daemon=True).start()
+
+    def _restart_worker(self) -> None:
+        self._stop_background_processes()
+        self._uvicorn_error = None
+        time.sleep(_RESTART_DELAY_S)
+        self.after(0, self._start)
 
     def _run_uvicorn(self) -> None:
         try:
@@ -229,29 +269,29 @@ class SetupApp(tk.Tk):
             self._uvicorn_server = server
             server.run()
             if not server.should_exit and self._uvicorn_error is None:
-                detail = "Local server stopped unexpectedly"
-                self._uvicorn_error = detail
-                self._append_log(detail)
-                self.after(0, lambda msg=detail: self._set_status("crashed", detail=msg))
+                self._fail_startup(
+                    "Máy chủ cục bộ dừng ngoài ý muốn. Vui lòng khởi động lại máy chủ."
+                )
         except Exception:
-            detail = "Local server failed to start"
-            self._uvicorn_error = detail
-            self._append_log(f"{detail}\n{traceback.format_exc()}")
-            self.after(0, lambda msg=detail: self._set_status("crashed", detail=msg))
+            self._fail_startup(
+                "Không thể khởi động máy chủ cục bộ. Vui lòng khởi động lại máy chủ.",
+                include_traceback=True,
+            )
 
     def _start_tunnel_when_server_ready(self) -> None:
-        deadline = time.monotonic() + _LOCAL_SERVER_START_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if self._uvicorn_error is not None:
-                return
-            if self._local_server_ready():
-                break
-            time.sleep(_LOCAL_SERVER_POLL_INTERVAL_S)
-        else:
-            detail = self._uvicorn_error or f"Local server did not respond at {_LOCAL_SERVER_URL}"
-            self._append_log(detail)
-            self.after(0, lambda msg=detail: self._set_status("crashed", detail=msg))
+        self.after(0, lambda: self._set_status_detail("Đang kiểm tra máy chủ cục bộ..."))
+        if not self._wait_until_ready(
+            self._local_server_ready,
+            timeout_s=_LOCAL_SERVER_START_TIMEOUT_S,
+        ):
+            if self._uvicorn_error is None:
+                self._fail_startup(
+                    "Máy chủ cục bộ không phản hồi tại 127.0.0.1:8001. Vui lòng khởi động lại máy chủ."
+                )
             return
+
+        self.after(0, lambda: self._set_status("starting_tunnel"))
+        self.after(0, lambda: self._set_status_detail("Máy chủ cục bộ đã sẵn sàng. Đang khởi động tunnel..."))
 
         try:
             cf_path = self._get_cloudflared()
@@ -264,12 +304,12 @@ class SetupApp(tk.Tk):
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         except Exception:
-            detail = "Could not start cloudflared tunnel"
-            self._append_log(f"{detail}\n{traceback.format_exc()}")
-            self.after(0, lambda msg=detail: self._set_status("crashed", detail=msg))
+            self._fail_startup(
+                "Không thể khởi động cloudflared. Vui lòng khởi động lại máy chủ.",
+                include_traceback=True,
+            )
             return
 
-        self.after(0, lambda: self._set_status("starting_tunnel"))
         threading.Thread(target=self._watch_tunnel, daemon=True).start()
 
     def _get_cloudflared(self) -> str:
@@ -278,6 +318,9 @@ class SetupApp(tk.Tk):
 
     def _watch_tunnel(self) -> None:
         if self._tunnel_proc is None or self._tunnel_proc.stdout is None:
+            self._fail_startup(
+                "Không đọc được trạng thái cloudflared. Vui lòng khởi động lại máy chủ."
+            )
             return
 
         last_line = ""
@@ -286,23 +329,47 @@ class SetupApp(tk.Tk):
             match = _TUNNEL_URL_RE.search(line)
             if match:
                 url = match.group(0)
-                self.after(0, lambda value=url: self._on_tunnel_ready(value))
+                self.after(0, lambda: self._set_status("checking_public"))
+                self.after(0, lambda: self._set_status_detail("Đã có URL tunnel. Đang kiểm tra truy cập public..."))
+                threading.Thread(
+                    target=self._verify_public_url_then_ready,
+                    args=(url,),
+                    daemon=True,
+                ).start()
                 return
 
-        if self._tunnel_proc is None:
+        if self._uvicorn_error is not None:
             return
 
-        detail = "Tunnel exited before a public URL was ready"
+        detail = "Không lấy được đường dẫn public từ cloudflared."
         if self._tunnel_proc.poll() is not None:
-            detail = f"{detail} (exit code {self._tunnel_proc.returncode})"
+            detail = f"{detail} Mã thoát: {self._tunnel_proc.returncode}."
         if last_line:
-            detail = f"{detail}: {last_line}"
-        self._append_log(detail)
-        self.after(0, lambda msg=detail: self._set_status("crashed", detail=msg))
+            detail = f"{detail} Dòng cuối: {last_line}"
+        self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
+
+    def _verify_public_url_then_ready(self, url: str) -> None:
+        def public_url_ready() -> bool:
+            return self._http_ok(url)
+
+        if not self._wait_until_ready(
+            public_url_ready,
+            timeout_s=_PUBLIC_TUNNEL_START_TIMEOUT_S,
+        ):
+            self._fail_startup(
+                "Đường dẫn public chưa sẵn sàng cho người dùng. Vui lòng khởi động lại máy chủ."
+            )
+            return
+
+        self.after(0, lambda value=url: self._on_tunnel_ready(value))
 
     def _on_tunnel_ready(self, url: str) -> None:
         self._status_var.set(url)
         self._status_lbl.config(fg="#1a7a1a")
+        self._detail_var.set("Sẵn sàng cho người dùng truy cập.")
+        self._start_btn.config(state="disabled")
+        self._restart_btn.config(state="normal")
+        self._stop_btn.config(state="normal")
         self._show_qr(url)
         threading.Thread(target=self._do_update_cors, args=(url,), daemon=True).start()
 
@@ -318,20 +385,23 @@ class SetupApp(tk.Tk):
 
             update_cors(url)
         except Exception:
-            pass
+            self._append_log("Cập nhật CORS thất bại nhưng không chặn vận hành.")
 
     def _stop(self) -> None:
+        self._stop_background_processes()
+        self._uvicorn_error = None
+        self._set_status("stopped")
+
+    def _stop_background_processes(self) -> None:
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None
-        self._uvicorn_error = None
         if self._tunnel_proc is not None:
             try:
                 self._tunnel_proc.terminate()
             except Exception:
                 pass
             self._tunnel_proc = None
-        self._set_status("stopped")
 
     def _show_qr(self, url: str) -> None:
         qr = qrcode.QRCode(border=2)
@@ -365,11 +435,24 @@ class SetupApp(tk.Tk):
                 self._hidden_streams.append(stream)
 
     def _local_server_ready(self) -> bool:
+        return self._http_ok(_LOCAL_SERVER_URL)
+
+    def _http_ok(self, url: str) -> bool:
         try:
-            with request.urlopen(_LOCAL_SERVER_URL, timeout=1.0) as response:
-                return response.status == 200
+            with request.urlopen(url, timeout=1.5) as response:
+                return 200 <= response.status < 400
         except Exception:
             return False
+
+    def _wait_until_ready(self, probe, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if self._uvicorn_error is not None:
+                return False
+            if probe():
+                return True
+            time.sleep(_POLL_INTERVAL_S)
+        return False
 
     def _append_log(self, message: str) -> None:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -377,26 +460,64 @@ class SetupApp(tk.Tk):
         with LOG_PATH.open("a", encoding="utf-8") as handle:
             handle.write(f"[{timestamp}] {message}\n")
 
+    def _set_status_detail(self, message: str) -> None:
+        self._detail_var.set(message)
+
+    def _fail_startup(self, detail: str, *, include_traceback: bool = False) -> None:
+        if self._uvicorn_error is not None:
+            return
+        self._uvicorn_error = detail
+
+        log_message = detail
+        if include_traceback:
+            log_message = f"{detail}\n{traceback.format_exc()}"
+        self._append_log(log_message)
+
+        def apply_failure() -> None:
+            self._stop_background_processes()
+            self._set_status("crashed", detail=detail)
+
+        self.after(0, apply_failure)
+
     def _set_status(self, state: str, detail: str | None = None) -> None:
         match state:
             case "starting_server":
-                self._status_var.set("Đang khởi động server cục bộ...")
+                self._status_var.set("Đang khởi động máy chủ cục bộ...")
+                self._detail_var.set("Đang chuẩn bị tiến trình nền...")
                 self._status_lbl.config(fg="#888888")
                 self._qr_canvas.grid_remove()
             case "starting_tunnel":
-                self._status_var.set("Đang khởi động tunnel...")
+                self._status_var.set("Máy chủ cục bộ đã sẵn sàng. Đang tạo đường dẫn public...")
+                self._detail_var.set("Đang chờ cloudflared cấp URL tunnel...")
+                self._status_lbl.config(fg="#888888")
+                self._qr_canvas.grid_remove()
+            case "checking_public":
+                self._status_var.set("Đang tự kiểm tra kết nối public trước khi hiển thị QR...")
+                self._detail_var.set("Đang thử mở URL public giống như người dùng sẽ truy cập...")
+                self._status_lbl.config(fg="#888888")
+                self._qr_canvas.grid_remove()
+            case "restarting":
+                self._status_var.set("Đang khởi động lại máy chủ...")
+                self._detail_var.set("Đang dừng tiến trình cũ rồi khởi động lại...")
                 self._status_lbl.config(fg="#888888")
                 self._qr_canvas.grid_remove()
             case "stopped":
-                self._status_var.set("Server stopped")
+                self._status_var.set("Máy chủ đã dừng.")
+                self._detail_var.set("")
                 self._status_lbl.config(fg="#888888")
                 self._start_btn.config(state="normal")
+                self._restart_btn.config(state="disabled")
                 self._stop_btn.config(state="disabled")
                 self._qr_canvas.grid_remove()
             case "crashed":
-                self._status_var.set(detail or f"Server crashed - xem {LOG_PATH}")
+                self._status_var.set(
+                    detail
+                    or f"Khởi động thất bại. Xem log tại {LOG_PATH} và khởi động lại máy chủ."
+                )
+                self._detail_var.set("Có lỗi trong quá trình kiểm tra sẵn sàng. Vui lòng bấm Khởi động lại.")
                 self._status_lbl.config(fg="#cc0000")
                 self._start_btn.config(state="normal")
+                self._restart_btn.config(state="normal")
                 self._stop_btn.config(state="disabled")
                 self._qr_canvas.grid_remove()
 
