@@ -6,7 +6,7 @@ block_cipher = None
 
 a = Analysis(
     ["gui/__main__.py"],
-    pathex=["."],
+    pathex=[".", "gui"],
     binaries=[],
     datas=[
         # Config (chỉ base_profile, KHÔNG bundle app_settings.json — chứa secrets)
