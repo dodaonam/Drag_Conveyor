@@ -34,13 +34,12 @@ jobs:
 
       - name: Package zip
         shell: powershell
-        run: Compress-Archive -Path dist\DragConveyor -DestinationPath DragConveyor_latest.zip -Force
+        run: Compress-Archive -Path dist\DragConveyor -DestinationPath DragConveyor_v${{ github.run_number }}.zip -Force
 
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
-          name: Latest Build
-          body: "Auto-built from commit ${{ github.sha }}"
-          files: DragConveyor_latest.zip
-          prerelease: true
+          tag_name: v${{ github.run_number }}
+          name: "Build v${{ github.run_number }}"
+          body: "Commit: ${{ github.sha }}"
+          files: DragConveyor_v${{ github.run_number }}.zip
