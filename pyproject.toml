@@ -9,12 +9,13 @@ dependencies = [
     "fastapi>=0.115.0",
     "langchain-core>=0.3.0",
     "langchain-openai>=0.3.0",
-    "onnxruntime-gpu>=1.26.0",
+    "onnxruntime>=1.27.0",
     "opencv-python>=4.13.0.92",
     "pydantic>=2.0",
     "python-dotenv>=1.2.2",
+    "qrcode>=8.2",
     "uvicorn[standard]>=0.30.0",
-    "weasyprint>=62.0",
+    "pdfkit>=1.0",
 ]
 
 [project.optional-dependencies]

@@ -12,11 +12,16 @@ from tkinter import filedialog, messagebox
 
 import qrcode
 
-_ROOT = Path(__file__).parent.parent
+
+def _get_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent.parent
+
+
+_ROOT = _get_root()
 CONFIG_PATH = _ROOT / "config" / "app_settings.json"
-# Must match settings.REPORTS_DIR default (server/runtime/reports) so the GUI
-# pre-fills the same path the server would use when nothing is configured.
-DEFAULT_REPORTS_DIR = str((_ROOT / "server" / "runtime" / "reports").resolve())
+DEFAULT_REPORTS_DIR = str((_ROOT / "runtime" / "reports").resolve())
 _TUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 
 # (label, config_key, env_var, is_secret, required)
@@ -36,9 +41,8 @@ class SetupApp(tk.Tk):
         super().__init__()
         self.title("Drag Conveyor — Setup")
         self.resizable(False, False)
-        self._proc: subprocess.Popen | None = None
         self._tunnel_proc: subprocess.Popen | None = None
-        self._server_env: dict[str, str] = {}
+        self._uvicorn_server = None  # uvicorn.Server instance set in _run_uvicorn
         self._vars: dict[str, tk.StringVar] = {}
         self._build_ui()
         self._load()
@@ -170,19 +174,16 @@ class SetupApp(tk.Tk):
             return
         self._write_config(data)
 
-        self._server_env = self._build_env(data)
+        env = self._build_env(data)
+        # Must update os.environ BEFORE starting uvicorn thread:
+        # settings.py reads env vars at import time, so they must be set first.
+        os.environ.update(env)
 
-        self._proc = subprocess.Popen(
-            [
-                sys.executable, "-m", "uvicorn", "main:app",
-                "--host", "127.0.0.1", "--port", "8001", "--log-level", "warning",
-            ],
-            cwd=str(_ROOT / "server"),
-            env=self._server_env,
-        )
+        threading.Thread(target=self._run_uvicorn, daemon=True).start()
 
+        cf_path = self._get_cloudflared()
         self._tunnel_proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", "http://localhost:8001"],
+            [cf_path, "tunnel", "--url", "http://localhost:8001"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -194,7 +195,22 @@ class SetupApp(tk.Tk):
         self._stop_btn.config(state="normal")
 
         threading.Thread(target=self._watch_tunnel, daemon=True).start()
-        self._poll()
+
+    def _run_uvicorn(self) -> None:
+        import uvicorn
+        if getattr(sys, "frozen", False):
+            server_dir = str(Path(sys._MEIPASS) / "server")
+        else:
+            server_dir = str(_ROOT / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        config = uvicorn.Config("main:app", host="127.0.0.1", port=8001, log_level="warning")
+        self._uvicorn_server = uvicorn.Server(config)
+        self._uvicorn_server.run()
+
+    def _get_cloudflared(self) -> str:
+        cf = _ROOT / "bin" / "cloudflared.exe"
+        return str(cf) if cf.exists() else "cloudflared"
 
     def _watch_tunnel(self) -> None:
         if self._tunnel_proc is None or self._tunnel_proc.stdout is None:
@@ -210,32 +226,32 @@ class SetupApp(tk.Tk):
         self._status_var.set(url)
         self._status_lbl.config(fg="#1a7a1a")
         self._show_qr(url)
-        subprocess.Popen(
-            [sys.executable, "update_cors.py", url],
-            cwd=str(_ROOT / "server"),
-            env=self._server_env,
-        )
+        threading.Thread(target=self._do_update_cors, args=(url,), daemon=True).start()
+
+    def _do_update_cors(self, url: str) -> None:
+        if getattr(sys, "frozen", False):
+            server_dir = str(Path(sys._MEIPASS) / "server")
+        else:
+            server_dir = str(_ROOT / "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        try:
+            from update_cors import update_cors
+            update_cors(url)
+        except Exception:
+            pass  # non-fatal — CORS failure does not block operation
 
     def _stop(self) -> None:
-        for proc in (self._proc, self._tunnel_proc):
-            if proc:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-        self._proc = None
-        self._tunnel_proc = None
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
+            self._uvicorn_server = None
+        if self._tunnel_proc is not None:
+            try:
+                self._tunnel_proc.terminate()
+            except Exception:
+                pass
+            self._tunnel_proc = None
         self._set_status("stopped")
-
-    def _poll(self) -> None:
-        if self._proc is None:
-            return
-        ret = self._proc.poll()
-        if ret is not None:
-            self._proc = None
-            self._set_status("crashed" if ret != 0 else "stopped")
-            return
-        self.after(2000, self._poll)
 
     def _show_qr(self, url: str) -> None:
         qr = qrcode.QRCode(border=2)

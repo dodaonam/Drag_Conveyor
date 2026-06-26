@@ -1,0 +1,43 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: |
+          uv sync
+          uv pip install pyinstaller
+
+      - name: Build with PyInstaller
+        run: uv run pyinstaller DragConveyor.spec --clean
+
+      - name: Copy vendor binaries
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\DragConveyor\bin | Out-Null
+          Copy-Item vendor\cloudflared.exe  dist\DragConveyor\bin\
+          Copy-Item vendor\wkhtmltopdf.exe  dist\DragConveyor\bin\
+
+      - name: Package zip
+        shell: powershell
+        run: Compress-Archive -Path dist\DragConveyor -DestinationPath DragConveyor_latest.zip -Force
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build
+          body: "Auto-built from commit ${{ github.sha }}"
+          files: DragConveyor_latest.zip
+          prerelease: true
