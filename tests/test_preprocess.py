@@ -53,10 +53,11 @@ class SlowDownVideoTests(unittest.TestCase):
             if not _write_video(src, 12):
                 self.skipTest("VideoWriter (mp4v) not available")
             n_in = _frame_count(str(src))
-            out = preprocess.slow_down_video(src, dst, factor=0.75)
+            out = preprocess.slow_down_video(src, dst, factor=0.5)
             self.assertEqual(out, str(dst))
             n_out = _frame_count(out)
-            self.assertGreater(n_out, n_in)  # genuinely slowed down
+            # 0.5 keeps every real frame and inserts one midpoint per pair → 2N-1.
+            self.assertEqual(n_out, 2 * n_in - 1)
 
     def test_first_frame_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -64,7 +65,7 @@ class SlowDownVideoTests(unittest.TestCase):
             dst = Path(tmp) / "out.mp4"
             if not _write_video(src, 8):
                 self.skipTest("VideoWriter (mp4v) not available")
-            out = preprocess.slow_down_video(src, dst, factor=0.75)
+            out = preprocess.slow_down_video(src, dst, factor=0.5)
             cap_in = cv2.VideoCapture(str(src))
             cap_out = cv2.VideoCapture(out)
             ok_in, f_in = cap_in.read()

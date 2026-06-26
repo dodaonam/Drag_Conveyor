@@ -234,7 +234,11 @@ def run_batch_inspection(
         cap.release()
         engine.close()
 
-    LOGGER.info("Collected %d bars from %d frames", len(collected), frame_count)
+    LOGGER.info(
+        "Collected %d bars from %d frames (%d tracks created total — transient/chain/noise tracks "
+        "consume ids but are dropped by min_hits + detection_filter)",
+        len(collected), frame_count, tracker._next_id - 1,
+    )
 
     # Filter out false detections (e.g. chain links misdetected as bars).
     detection_filter = profile.collection.detection_filter

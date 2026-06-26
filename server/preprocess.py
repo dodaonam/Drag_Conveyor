@@ -6,9 +6,12 @@ centroid tracker's per-frame jump below ``max_jump_px`` (see
 ``drag_conveyor/pipeline/tracking.py``), which makes detection / counting more
 stable for fast-moving conveyors.
 
-``factor`` is the target playback speed: 0.75 means "play at 75% speed", which
-produces ~1/0.75 = 1.33x as many frames (≈4 output frames for every 3 input
-frames). Output frames that land between two real frames are interpolated.
+``factor`` is the target playback speed and MUST be of the form 1/n (e.g. 0.5,
+0.333, 0.25). Every ORIGINAL frame is kept verbatim and ``n-1`` optical-flow
+interpolated frames are inserted between each pair, so factor=0.5 doubles the
+frame count (one midpoint per pair). A non-1/n factor is snapped to the nearest
+1/n — a fractional ratio would otherwise DROP real frames and replace them with
+interpolated guesses, which degrades detection.
 """
 
 from __future__ import annotations
@@ -20,9 +23,9 @@ import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
-# Target playback speed before inference. 0.75 = 75% speed (~1.33x frames).
-# Set to >= 1.0 to disable slow-motion preprocessing.
-SLOWDOWN_FACTOR = 0.75
+# Target playback speed before inference. 0.5 = half speed (2x frames, every real
+# frame kept + 1 interpolated midpoint). Must be 1/n. Set to >= 1.0 to disable.
+SLOWDOWN_FACTOR = 0.5
 
 # Optical flow is computed on a downscaled copy for speed, then scaled back up.
 _FLOW_SCALE = 0.5
@@ -55,15 +58,25 @@ def _warp(img: np.ndarray, flow: np.ndarray, grid_x: np.ndarray, grid_y: np.ndar
 def slow_down_video(src_path, dst_path, factor: float = SLOWDOWN_FACTOR) -> str:
     """Write a slowed copy of ``src_path`` to ``dst_path`` and return its path.
 
-    Resamples the video onto a denser timeline: output frame ``k`` is sampled at
-    input position ``k * factor``. When that position falls between two real
-    frames, an optical-flow interpolated frame is generated; when it lands on a
-    real frame, that frame is copied verbatim. Returns ``str(src_path)`` unchanged
-    when slowdown is disabled (factor >= 1) or the video has fewer than 2 frames.
+    EVERY original frame is preserved verbatim; ``steps - 1`` optical-flow
+    interpolated frames are inserted between each consecutive pair, where
+    ``steps = round(1/factor)``. The effective speed is therefore 1/steps — a
+    non-1/n ``factor`` is snapped to the nearest 1/n (with a warning) so that real
+    frames are never dropped. Returns ``str(src_path)`` unchanged when slowdown is
+    disabled (factor >= 1) or the video has fewer than 2 frames.
     """
     src_path, dst_path = str(src_path), str(dst_path)
     if not (0.0 < factor < 1.0):
         return src_path
+    steps = round(1.0 / factor)
+    if steps <= 1:
+        return src_path
+    effective = 1.0 / steps
+    if abs(effective - factor) > 1e-3:
+        LOGGER.warning(
+            "Slow-motion factor %.3f is not 1/n; snapping to %.3f (1/%d) so every "
+            "real frame is preserved.", factor, effective, steps,
+        )
 
     cap = cv2.VideoCapture(src_path)
     if not cap.isOpened():
@@ -84,51 +97,33 @@ def slow_down_video(src_path, dst_path, factor: float = SLOWDOWN_FACTOR) -> str:
 
     grid_x, grid_y = np.meshgrid(np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32))
     dis = _make_dis()
-    eps = 1e-6
 
+    writer.write(prev)  # first real frame, kept verbatim
     prev_gray = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
-    prev_index = 0
-    out_k = 0
-    frames_in, frames_out = 1, 0
+    frames_in, frames_out = 1, 1
 
     while True:
         ok, curr = cap.read()
         if not ok:
             break
         frames_in += 1
-        curr_index = prev_index + 1
         curr_gray = cv2.cvtColor(curr, cv2.COLOR_BGR2GRAY)
-        flows = None  # lazily computed only when an interpolated frame is needed
-
-        # Emit every output frame whose source position lands in [prev_index, curr_index).
-        while out_k * factor < curr_index - eps:
-            t = (out_k * factor) - prev_index
-            if t <= eps:
-                writer.write(prev)                       # lands on the real frame
-            else:
-                if flows is None:
-                    flow_fwd = _flow(prev_gray, curr_gray, dis)   # prev -> curr
-                    flow_bwd = _flow(curr_gray, prev_gray, dis)   # curr -> prev
-                    flows = (flow_fwd, flow_bwd)
-                flow_fwd, flow_bwd = flows
-                warp_prev = _warp(prev, flow_fwd, grid_x, grid_y, t)
-                warp_curr = _warp(curr, flow_bwd, grid_x, grid_y, 1.0 - t)
-                writer.write(cv2.addWeighted(warp_prev, 1.0 - t, warp_curr, t, 0.0))
-            out_k += 1
+        flow_fwd = _flow(prev_gray, curr_gray, dis)   # prev -> curr
+        flow_bwd = _flow(curr_gray, prev_gray, dis)   # curr -> prev
+        for s in range(1, steps):
+            t = s / steps
+            warp_prev = _warp(prev, flow_fwd, grid_x, grid_y, t)
+            warp_curr = _warp(curr, flow_bwd, grid_x, grid_y, 1.0 - t)
+            writer.write(cv2.addWeighted(warp_prev, 1.0 - t, warp_curr, t, 0.0))
             frames_out += 1
-
-        prev, prev_gray, prev_index = curr, curr_gray, curr_index
-
-    # Tail: any output that maps exactly onto the final frame.
-    while out_k * factor <= prev_index + eps:
-        writer.write(prev)
-        out_k += 1
+        writer.write(curr)  # real frame, kept verbatim
         frames_out += 1
+        prev, prev_gray = curr, curr_gray
 
     cap.release()
     writer.release()
     LOGGER.info(
-        "Slow-motion preprocess: %d -> %d frames (factor=%.2f)",
-        frames_in, frames_out, factor,
+        "Slow-motion preprocess: %d -> %d frames (1/%d speed, every real frame kept)",
+        frames_in, frames_out, steps,
     )
     return dst_path

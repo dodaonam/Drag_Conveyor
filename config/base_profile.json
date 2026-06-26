@@ -63,7 +63,7 @@
       "max_jump_px": 80.0,
       "ttl_frames": 10,
       "min_hits": 2,
-      "max_reverse_px": 5.0,
+      "max_reverse_px": 12.0,
       "max_area_ratio_change": 3.0
     },
     "detection_filter": {
