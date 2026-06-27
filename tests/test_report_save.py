@@ -14,10 +14,11 @@ if str(SERVER_DIR) not in sys.path:
 import report  # noqa: E402
 
 
-def _weasyprint_available() -> bool:
+def _pdfkit_available() -> bool:
     try:
-        import weasyprint  # noqa: F401
-        return True
+        import pdfkit  # noqa: F401
+        import shutil
+        return shutil.which("wkhtmltopdf") is not None
     except Exception:
         return False
 
@@ -65,7 +66,7 @@ class ReportSaveTests(unittest.TestCase):
                 report.save_report(s, [], _META, Path(tmp), lambda k: None,
                                    exported_at_iso="2026-06-11T11:47:00+00:00")
 
-    @unittest.skipUnless(_weasyprint_available(), "WeasyPrint + system libs not installed")
+    @unittest.skipUnless(_pdfkit_available(), "pdfkit + wkhtmltopdf binary not available")
     def test_render_pdf_smoke(self) -> None:
         pdf = report.render_pdf("<html><body><h1>hi</h1></body></html>")
         self.assertTrue(pdf.startswith(b"%PDF"))
