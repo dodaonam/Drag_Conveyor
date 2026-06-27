@@ -26,15 +26,20 @@ _ROOT = _get_root()
 CONFIG_PATH = _ROOT / "config" / "app_settings.json"
 DEFAULT_REPORTS_DIR = str((_ROOT / "runtime" / "reports").resolve())
 LOG_PATH = _ROOT / "runtime" / "gui.log"
-_TUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 _LOCAL_SERVER_URL = "http://127.0.0.1:8001/"
 _LOCAL_SERVER_START_TIMEOUT_S = 10.0
-_PUBLIC_TUNNEL_START_TIMEOUT_S = 15.0
 _POLL_INTERVAL_S = 0.25
-_RESTART_DELAY_S = 1.0
+_PORT_FREE_TIMEOUT_S = 10.0
+# Named tunnel: detect readiness from cloudflared log output.
+# Confirmed format (piped): "2026-01-01T00:00:00Z INF Registered tunnel connection connIndex=0 ..."
+_TUNNEL_CONNECTED_RE = re.compile(r"Registered tunnel connection", re.IGNORECASE)
+# If the keyword doesn't appear within this timeout but the process is still alive, assume connected.
+_TUNNEL_CONNECTED_FALLBACK_S = 25.0
+_CF_TUNNEL_NAME = "drag-conveyor"
 
 # (label, config_key, env_var, is_secret, required)
 FIELDS: list[tuple[str, str, str, bool, bool]] = [
+    ("Cloudflare API Token", "cf_api_token", "CLOUDFLARE_API_TOKEN", True, False),
     ("Địa chỉ R2 Endpoint", "r2_endpoint_url", "R2_ENDPOINT_URL", False, True),
     ("R2 Access Key ID", "r2_access_key_id", "R2_ACCESS_KEY_ID", False, True),
     ("R2 Secret Access Key", "r2_secret_access_key", "R2_SECRET_ACCESS_KEY", True, True),
@@ -54,7 +59,9 @@ class SetupApp(tk.Tk):
         self._uvicorn_server = None
         self._uvicorn_error: str | None = None
         self._hidden_streams: list[object] = []
+        self._config_lock = threading.Lock()
         self._vars: dict[str, tk.StringVar] = {}
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         self._build_ui()
         self._load()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -128,6 +135,13 @@ class SetupApp(tk.Tk):
             state="disabled",
         )
         self._stop_btn.pack(side="left", padx=4)
+        self._cf_setup_btn = tk.Button(
+            btn_frame,
+            text="Thiết lập Cloudflare",
+            width=18,
+            command=self._on_cf_setup_btn_click,
+        )
+        self._cf_setup_btn.pack(side="left", padx=4)
 
         self._status_var = tk.StringVar(value="Máy chủ chưa chạy")
         self._status_lbl = tk.Label(
@@ -167,6 +181,18 @@ class SetupApp(tk.Tk):
             if key == "reports_dir" and not val:
                 val = DEFAULT_REPORTS_DIR
             var.set(val)
+        if data.get("cf_tunnel_url"):
+            self._cf_setup_btn.pack_forget()
+
+    def _load_setting(self, key: str) -> str:
+        """Read a single key from the config file on disk (not from form vars)."""
+        with self._config_lock:
+            if not CONFIG_PATH.exists():
+                return ""
+            try:
+                return json.loads(CONFIG_PATH.read_text(encoding="utf-8")).get(key, "")
+            except Exception:
+                return ""
 
     def _browse_dir(self, var: tk.StringVar) -> None:
         initial = var.get().strip() or DEFAULT_REPORTS_DIR
@@ -196,8 +222,21 @@ class SetupApp(tk.Tk):
         return True
 
     def _write_config(self, data: dict[str, str]) -> None:
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        # Merge with existing config so that cf_tunnel_* keys survive form saves
+        # and form field values survive cf setup saves.
+        # Lock prevents read-merge-write races between main thread and background thread.
+        with self._config_lock:
+            existing: dict[str, str] = {}
+            if CONFIG_PATH.exists():
+                try:
+                    existing = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            CONFIG_PATH.write_text(
+                json.dumps({**existing, **data}, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
 
     def _save(self) -> None:
         data = self._collect()
@@ -227,7 +266,6 @@ class SetupApp(tk.Tk):
         self._start_btn.config(state="disabled")
         self._restart_btn.config(state="disabled")
         self._stop_btn.config(state="normal")
-        self._qr_canvas.grid_remove()
 
         threading.Thread(target=self._run_uvicorn, daemon=True).start()
         threading.Thread(target=self._start_tunnel_when_server_ready, daemon=True).start()
@@ -242,7 +280,7 @@ class SetupApp(tk.Tk):
     def _restart_worker(self) -> None:
         self._stop_background_processes()
         self._uvicorn_error = None
-        time.sleep(_RESTART_DELAY_S)
+        self._wait_for_port_free(8001, timeout_s=_PORT_FREE_TIMEOUT_S)
         self.after(0, self._start)
 
     def _run_uvicorn(self) -> None:
@@ -250,12 +288,7 @@ class SetupApp(tk.Tk):
             import uvicorn
 
             self._ensure_standard_streams()
-            if getattr(sys, "frozen", False):
-                server_dir = str(Path(sys._MEIPASS) / "server")
-            else:
-                server_dir = str(_ROOT / "server")
-            if server_dir not in sys.path:
-                sys.path.insert(0, server_dir)
+            self._ensure_server_in_path()
 
             config = uvicorn.Config(
                 "main:app",
@@ -291,12 +324,20 @@ class SetupApp(tk.Tk):
             return
 
         self.after(0, lambda: self._set_status("starting_tunnel"))
-        self.after(0, lambda: self._set_status_detail("Máy chủ cục bộ đã sẵn sàng. Đang khởi động tunnel..."))
+
+        cf_path = self._get_cloudflared()
+        tunnel_name = self._load_setting("cf_tunnel_name")
+        if not tunnel_name:
+            self._fail_startup(
+                "Chưa thiết lập Cloudflare Tunnel. Bấm 'Thiết lập Cloudflare' trước khi khởi động."
+            )
+            return
+
+        cmd = [cf_path, "tunnel", "run", "--url", "http://localhost:8001", tunnel_name]
 
         try:
-            cf_path = self._get_cloudflared()
             self._tunnel_proc = subprocess.Popen(
-                [cf_path, "tunnel", "--url", "http://localhost:8001"],
+                cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -316,52 +357,63 @@ class SetupApp(tk.Tk):
         cf = _ROOT / "bin" / "cloudflared.exe"
         return str(cf) if cf.exists() else "cloudflared"
 
+    def _ensure_server_in_path(self) -> None:
+        server_dir = (
+            str(Path(sys._MEIPASS) / "server") if getattr(sys, "frozen", False)
+            else str(_ROOT / "server")
+        )
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+
     def _watch_tunnel(self) -> None:
-        if self._tunnel_proc is None or self._tunnel_proc.stdout is None:
+        proc = self._tunnel_proc  # capture local ref before any thread can clear it
+        if proc is None or proc.stdout is None:
             self._fail_startup(
                 "Không đọc được trạng thái cloudflared. Vui lòng khởi động lại máy chủ."
             )
             return
 
-        last_line = ""
-        for line in self._tunnel_proc.stdout:
-            last_line = line.strip()
-            match = _TUNNEL_URL_RE.search(line)
-            if match:
-                url = match.group(0)
-                self.after(0, lambda: self._set_status("checking_public"))
-                self.after(0, lambda: self._set_status_detail("Đã có URL tunnel. Đang kiểm tra truy cập public..."))
-                threading.Thread(
-                    target=self._verify_public_url_then_ready,
-                    args=(url,),
-                    daemon=True,
-                ).start()
-                return
-
-        if self._uvicorn_error is not None:
-            return
-
-        detail = "Không lấy được đường dẫn public từ cloudflared."
-        if self._tunnel_proc.poll() is not None:
-            detail = f"{detail} Mã thoát: {self._tunnel_proc.returncode}."
-        if last_line:
-            detail = f"{detail} Dòng cuối: {last_line}"
-        self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
-
-    def _verify_public_url_then_ready(self, url: str) -> None:
-        def public_url_ready() -> bool:
-            return self._http_ok(url)
-
-        if not self._wait_until_ready(
-            public_url_ready,
-            timeout_s=_PUBLIC_TUNNEL_START_TIMEOUT_S,
-        ):
+        stored_url = self._load_setting("cf_tunnel_url")
+        if not stored_url:
             self._fail_startup(
-                "Đường dẫn public chưa sẵn sàng cho người dùng. Vui lòng khởi động lại máy chủ."
+                "Thiếu cf_tunnel_url trong cấu hình. Bấm 'Thiết lập Cloudflare' lại."
             )
             return
 
-        self.after(0, lambda value=url: self._on_tunnel_ready(value))
+        # Named tunnel: URL is already known from settings.
+        # Detect readiness from log output; fall back to timeout if keyword not seen.
+        connected = threading.Event()
+
+        def _watch_stdout() -> None:
+            last_line = ""
+            for line in proc.stdout:
+                last_line = line.strip()
+                if _TUNNEL_CONNECTED_RE.search(line):
+                    connected.set()
+                    return
+            # stdout closed without the keyword — process exited unexpectedly.
+            if not connected.is_set() and self._uvicorn_error is None:
+                detail = "Tunnel không thể kết nối."
+                if proc.poll() is not None:
+                    detail = f"{detail} Mã thoát: {proc.returncode}."
+                if last_line:
+                    detail = f"{detail} Dòng cuối: {last_line}"
+                self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
+            connected.set()  # always unblock the wait below
+
+        threading.Thread(target=_watch_stdout, daemon=True).start()
+        connected.wait(timeout=_TUNNEL_CONNECTED_FALLBACK_S)
+
+        if self._uvicorn_error is not None:
+            return
+        if proc.poll() is not None:
+            # Process died — _watch_stdout already called _fail_startup.
+            return
+
+        # Keyword found, or timeout elapsed with process still alive → proceed.
+        # cfargotunnel.com resolves only to IPv6 ULA (no public IPv4), so we skip
+        # the HTTP health check and trust cloudflared's own connection confirmation.
+        self.after(0, lambda value=stored_url: self._on_tunnel_ready(value))
 
     def _on_tunnel_ready(self, url: str) -> None:
         self._status_var.set(url)
@@ -374,18 +426,116 @@ class SetupApp(tk.Tk):
         threading.Thread(target=self._do_update_cors, args=(url,), daemon=True).start()
 
     def _do_update_cors(self, url: str) -> None:
-        if getattr(sys, "frozen", False):
-            server_dir = str(Path(sys._MEIPASS) / "server")
-        else:
-            server_dir = str(_ROOT / "server")
-        if server_dir not in sys.path:
-            sys.path.insert(0, server_dir)
+        self._ensure_server_in_path()
         try:
             from update_cors import update_cors
 
             update_cors(url)
         except Exception:
             self._append_log("Cập nhật CORS thất bại nhưng không chặn vận hành.")
+
+    def _on_cf_setup_btn_click(self) -> None:
+        # Capture StringVar on the main (Tk) thread before handing off to a daemon thread.
+        # StringVar.get() touches the Tcl interpreter which is not thread-safe on Windows.
+        api_token = self._vars["cf_api_token"].get().strip()
+        threading.Thread(
+            target=self._setup_cloudflare_tunnel, args=(api_token,), daemon=True
+        ).start()
+
+    def _setup_cloudflare_tunnel(self, api_token_from_form: str) -> None:
+        """One-time setup: create named tunnel via API token. Runs in a background thread."""
+        self.after(0, lambda: self._cf_setup_btn.config(state="disabled"))
+
+        api_token = api_token_from_form or self._load_setting("cf_api_token")
+        if not api_token:
+            self.after(0, lambda: self._cf_setup_btn.config(state="normal"))
+            self.after(0, lambda: self._set_status_detail(
+                "Lỗi: Chưa nhập Cloudflare API Token. Điền token vào form rồi bấm Thiết lập lại."
+            ))
+            return
+
+        cf_path = self._get_cloudflared()
+        self.after(0, lambda: self._set_status_detail("Thiết lập Cloudflare: Đang tạo tunnel..."))
+
+        cf_uuid = self._create_or_find_tunnel(cf_path, api_token)
+        if not cf_uuid:
+            self.after(0, lambda: self._cf_setup_btn.config(state="normal"))
+            return
+
+        tunnel_url = f"https://{cf_uuid}.cfargotunnel.com"
+        self._write_config({
+            "cf_tunnel_name": _CF_TUNNEL_NAME,
+            "cf_tunnel_url": tunnel_url,
+            "cf_api_token": api_token,
+        })
+        self.after(0, lambda u=tunnel_url: self._on_cf_setup_complete(u))
+
+    def _create_or_find_tunnel(self, cf_path: str, api_token: str) -> str | None:
+        """
+        Try to create the named tunnel via API token. If the name already exists,
+        find its UUID from `tunnel list`. Returns the UUID string, or None on error.
+        """
+        env = {**os.environ, "CLOUDFLARE_API_TOKEN": api_token}
+        proc = subprocess.run(
+            [cf_path, "tunnel", "create", _CF_TUNNEL_NAME],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        combined = proc.stdout + proc.stderr
+
+        # Happy path: "Created tunnel <name> with id <uuid>"
+        match = re.search(
+            r"with id ([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
+            combined,
+        )
+        if match:
+            return match.group(1)
+
+        # Name already exists — reuse it.
+        if "already exist" in combined.lower():
+            cf_uuid = self._find_tunnel_uuid(cf_path, _CF_TUNNEL_NAME, api_token)
+            if cf_uuid:
+                return cf_uuid
+            self.after(0, lambda: self._set_status_detail(
+                f"Lỗi: Không tìm được UUID của tunnel '{_CF_TUNNEL_NAME}'. Kiểm tra kết nối mạng."
+            ))
+            return None
+
+        # Other error.
+        snippet = combined[:300]
+        self.after(0, lambda msg=snippet: self._set_status_detail(
+            f"Lỗi khi tạo tunnel: {msg}"
+        ))
+        return None
+
+    def _find_tunnel_uuid(self, cf_path: str, name: str, api_token: str) -> str | None:
+        """Return the UUID of an existing tunnel by name, or None."""
+        env = {**os.environ, "CLOUDFLARE_API_TOKEN": api_token}
+        proc = subprocess.run(
+            [cf_path, "tunnel", "list", "--output", "json"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        try:
+            for t in json.loads(proc.stdout):
+                if t.get("name") == name:
+                    return t.get("id")
+        except Exception:
+            pass
+        # Fallback: text parse for "tunnel list" without JSON support.
+        m = re.search(
+            r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s+"
+            + re.escape(name),
+            proc.stdout + proc.stderr,
+        )
+        return m.group(1) if m else None
+
+    def _on_cf_setup_complete(self, tunnel_url: str) -> None:
+        """Called on the GUI thread after successful setup."""
+        self._set_status_detail(f"Tunnel đã sẵn sàng: {tunnel_url}")
+        self._cf_setup_btn.pack_forget()
 
     def _stop(self) -> None:
         self._stop_background_processes()
@@ -444,6 +594,15 @@ class SetupApp(tk.Tk):
         except Exception:
             return False
 
+    def _wait_for_port_free(self, port: int, timeout_s: float) -> None:
+        import socket
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                if s.connect_ex(("127.0.0.1", port)) != 0:
+                    return  # port is free
+            time.sleep(0.2)
+
     def _wait_until_ready(self, probe, timeout_s: float) -> bool:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
@@ -455,7 +614,6 @@ class SetupApp(tk.Tk):
         return False
 
     def _append_log(self, message: str) -> None:
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         with LOG_PATH.open("a", encoding="utf-8") as handle:
             handle.write(f"[{timestamp}] {message}\n")
@@ -474,33 +632,28 @@ class SetupApp(tk.Tk):
         self._append_log(log_message)
 
         def apply_failure() -> None:
+            if self._uvicorn_error is None:  # _stop() cleared it before this ran
+                return
             self._stop_background_processes()
             self._set_status("crashed", detail=detail)
 
         self.after(0, apply_failure)
 
     def _set_status(self, state: str, detail: str | None = None) -> None:
+        self._qr_canvas.grid_remove()
         match state:
             case "starting_server":
                 self._status_var.set("Đang khởi động máy chủ cục bộ...")
                 self._detail_var.set("Đang chuẩn bị tiến trình nền...")
                 self._status_lbl.config(fg="#888888")
-                self._qr_canvas.grid_remove()
             case "starting_tunnel":
                 self._status_var.set("Máy chủ cục bộ đã sẵn sàng. Đang tạo đường dẫn public...")
-                self._detail_var.set("Đang chờ cloudflared cấp URL tunnel...")
+                self._detail_var.set("Máy chủ cục bộ đã sẵn sàng. Đang khởi động tunnel...")
                 self._status_lbl.config(fg="#888888")
-                self._qr_canvas.grid_remove()
-            case "checking_public":
-                self._status_var.set("Đang tự kiểm tra kết nối public trước khi hiển thị QR...")
-                self._detail_var.set("Đang thử mở URL public giống như người dùng sẽ truy cập...")
-                self._status_lbl.config(fg="#888888")
-                self._qr_canvas.grid_remove()
             case "restarting":
                 self._status_var.set("Đang khởi động lại máy chủ...")
                 self._detail_var.set("Đang dừng tiến trình cũ rồi khởi động lại...")
                 self._status_lbl.config(fg="#888888")
-                self._qr_canvas.grid_remove()
             case "stopped":
                 self._status_var.set("Máy chủ đã dừng.")
                 self._detail_var.set("")
@@ -508,7 +661,7 @@ class SetupApp(tk.Tk):
                 self._start_btn.config(state="normal")
                 self._restart_btn.config(state="disabled")
                 self._stop_btn.config(state="disabled")
-                self._qr_canvas.grid_remove()
+                self._cf_setup_btn.pack(side="left", padx=4)
             case "crashed":
                 self._status_var.set(
                     detail
@@ -519,7 +672,7 @@ class SetupApp(tk.Tk):
                 self._start_btn.config(state="normal")
                 self._restart_btn.config(state="normal")
                 self._stop_btn.config(state="disabled")
-                self._qr_canvas.grid_remove()
+                self._cf_setup_btn.pack(side="left", padx=4)
 
     def _on_close(self) -> None:
         self._stop()
