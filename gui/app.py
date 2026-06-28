@@ -368,16 +368,19 @@ class SetupApp(tk.Tk):
                     ).start()
             # keep draining stdout until cloudflared exits
 
+        exit_code = self._tunnel_proc.poll()
+        if url_found:
+            self._append_log(f"cloudflared exited unexpectedly (code={exit_code})")
+            return
         if self._uvicorn_error is not None:
             return
 
-        if not url_found:
-            detail = "Không lấy được đường dẫn public từ cloudflared."
-            if self._tunnel_proc.poll() is not None:
-                detail = f"{detail} Mã thoát: {self._tunnel_proc.returncode}."
-            if last_line:
-                detail = f"{detail} Dòng cuối: {last_line}"
-            self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
+        detail = "Không lấy được đường dẫn public từ cloudflared."
+        if exit_code is not None:
+            detail = f"{detail} Mã thoát: {exit_code}."
+        if last_line:
+            detail = f"{detail} Dòng cuối: {last_line}"
+        self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
 
     def _verify_public_url_then_ready(self, url: str) -> None:
         _last_err: list[str] = []
@@ -427,7 +430,7 @@ class SetupApp(tk.Tk):
             update_cors(url)
             self._append_log(f"CORS updated for {url}")
         except Exception:
-            self._append_log("CORS update failed (non-blocking)")
+            self._append_log(f"CORS update failed: {traceback.format_exc()}")
 
     def _stop(self) -> None:
         self._append_log("User stopped server")
@@ -482,13 +485,15 @@ class SetupApp(tk.Tk):
                 self._hidden_streams.append(stream)
 
     def _local_server_ready(self) -> bool:
-        return self._http_ok(_LOCAL_SERVER_URL)
+        return self._http_ok(_LOCAL_SERVER_URL, log_errors=True)
 
-    def _http_ok(self, url: str) -> bool:
+    def _http_ok(self, url: str, *, log_errors: bool = False) -> bool:
         try:
             with request.urlopen(url, timeout=1.5) as response:
                 return 200 <= response.status < 400
-        except Exception:
+        except Exception as exc:
+            if log_errors:
+                self._append_log(f"Local server check failed: {type(exc).__name__}: {exc}")
             return False
 
     def _wait_until_ready(self, probe) -> bool:
