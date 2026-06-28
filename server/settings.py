@@ -16,7 +16,14 @@ def _req(key: str) -> str:
     return val
 
 
-R2_ENDPOINT_URL = _req("R2_ENDPOINT_URL")
+def _endpoint(key: str) -> str:
+    raw = _req(key).strip('"').strip("'").strip()
+    if not raw.startswith(("http://", "https://")):
+        raw = f"https://{raw}"
+    return raw.rstrip("/")
+
+
+R2_ENDPOINT_URL = _endpoint("R2_ENDPOINT_URL")
 R2_ACCESS_KEY_ID = _req("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = _req("R2_SECRET_ACCESS_KEY")
 R2_BUCKET_NAME = _req("R2_BUCKET_NAME")

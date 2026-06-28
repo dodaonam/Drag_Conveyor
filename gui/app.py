@@ -249,6 +249,7 @@ class SetupApp(tk.Tk):
         threading.Thread(target=self._restart_worker, daemon=True).start()
 
     def _restart_worker(self) -> None:
+        self._stopping = True
         self._stop_background_processes()
         self._uvicorn_error = None
         time.sleep(_RESTART_DELAY_S)
