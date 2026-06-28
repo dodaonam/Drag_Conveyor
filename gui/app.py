@@ -28,8 +28,6 @@ DEFAULT_REPORTS_DIR = str((_ROOT / "runtime" / "reports").resolve())
 _MAX_LOG_FILES = 10
 _TUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 _LOCAL_SERVER_URL = "http://127.0.0.1:8001/"
-_LOCAL_SERVER_START_TIMEOUT_S = 60.0
-_PUBLIC_TUNNEL_START_TIMEOUT_S = 60.0
 _POLL_INTERVAL_S = 3.0
 _RESTART_DELAY_S = 1.0
 
@@ -291,14 +289,7 @@ class SetupApp(tk.Tk):
     def _start_tunnel_when_server_ready(self) -> None:
         self.after(0, lambda: self._set_status_detail("Đang kiểm tra máy chủ cục bộ..."))
         _t0 = time.monotonic()
-        if not self._wait_until_ready(
-            self._local_server_ready,
-            timeout_s=_LOCAL_SERVER_START_TIMEOUT_S,
-        ):
-            if self._uvicorn_error is None:
-                self._fail_startup(
-                    "Máy chủ cục bộ không phản hồi tại 127.0.0.1:8001. Vui lòng khởi động lại máy chủ."
-                )
+        if not self._wait_until_ready(self._local_server_ready):
             return
 
         self._append_log(f"Local server ready after {time.monotonic() - _t0:.1f}s")
@@ -367,14 +358,7 @@ class SetupApp(tk.Tk):
             return self._http_ok(url)
 
         _t0 = time.monotonic()
-        if not self._wait_until_ready(
-            public_url_ready,
-            timeout_s=_PUBLIC_TUNNEL_START_TIMEOUT_S,
-        ):
-            self._append_log(f"Public URL not reachable after {_PUBLIC_TUNNEL_START_TIMEOUT_S}s: {url}")
-            self._fail_startup(
-                "Đường dẫn public chưa sẵn sàng cho người dùng. Vui lòng khởi động lại máy chủ."
-            )
+        if not self._wait_until_ready(public_url_ready):
             return
 
         self._append_log(f"Public URL verified after {time.monotonic() - _t0:.1f}s: {url}")
@@ -464,15 +448,13 @@ class SetupApp(tk.Tk):
         except Exception:
             return False
 
-    def _wait_until_ready(self, probe, timeout_s: float) -> bool:
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
+    def _wait_until_ready(self, probe) -> bool:
+        while True:
             if self._uvicorn_error is not None:
                 return False
             if probe():
                 return True
             time.sleep(_POLL_INTERVAL_S)
-        return False
 
     def _append_log(self, message: str) -> None:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
