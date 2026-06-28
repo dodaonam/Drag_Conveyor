@@ -378,8 +378,21 @@ class SetupApp(tk.Tk):
             self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
 
     def _verify_public_url_then_ready(self, url: str) -> None:
+        _last_err: list[str] = []
+
         def public_url_ready() -> bool:
-            return self._http_ok(url)
+            try:
+                with request.urlopen(url, timeout=5) as response:
+                    ok = 200 <= response.status < 400
+                    if not ok:
+                        _last_err.append(f"HTTP {response.status}")
+                    return ok
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+                if not _last_err or _last_err[-1] != err:
+                    self._append_log(f"Public URL check failed: {err}")
+                    _last_err.append(err)
+                return False
 
         _t0 = time.monotonic()
         if not self._wait_until_ready(public_url_ready):
