@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import secrets
+import sys
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -17,7 +18,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from path_bootstrap import ensure_repo_root_on_path
+from path_bootstrap import ensure_repo_root_on_path, RUNTIME_DIR
 
 ensure_repo_root_on_path()
 
@@ -33,11 +34,37 @@ from drag_conveyor.inspection_modes import is_supported_inspection_mode
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    import os as _os
+    import time as _time
+    _gui_log = _os.environ.get("GUI_LOG_PATH", "")
+    if _gui_log:
+        _log_path = Path(_gui_log)
+    else:
+        _log_dir = RUNTIME_DIR / "logs"
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _log_path = _log_dir / _time.strftime("%d-%m-%Y_%H%M%S.log")
+
+    _fmt = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+    _fh = logging.FileHandler(_log_path, encoding="utf-8")
+    _fh.setFormatter(_fmt)
+    _root = logging.getLogger()
+    _root.setLevel(logging.INFO)
+    _root.addHandler(_fh)
+    if not getattr(sys, "frozen", False):
+        _sh = logging.StreamHandler()
+        _sh.setFormatter(_fmt)
+        _root.addHandler(_sh)
+
+    _logger = logging.getLogger(__name__)
+    _logger.info("Server starting")
     db.init_db()
     settings.TEMP_DIR.mkdir(parents=True, exist_ok=True)
     worker.start()
+    _logger.info("Server ready")
     yield
+    _logger.info("Server shutting down")
+    _root.removeHandler(_fh)
+    _fh.close()
 
 
 app = FastAPI(title="Drag Conveyor Inspection Server", lifespan=lifespan)

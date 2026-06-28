@@ -25,12 +25,12 @@ def _get_root() -> Path:
 _ROOT = _get_root()
 CONFIG_PATH = _ROOT / "config" / "app_settings.json"
 DEFAULT_REPORTS_DIR = str((_ROOT / "runtime" / "reports").resolve())
-LOG_PATH = _ROOT / "runtime" / "gui.log"
+_MAX_LOG_FILES = 10
 _TUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 _LOCAL_SERVER_URL = "http://127.0.0.1:8001/"
-_LOCAL_SERVER_START_TIMEOUT_S = 10.0
-_PUBLIC_TUNNEL_START_TIMEOUT_S = 15.0
-_POLL_INTERVAL_S = 0.25
+_LOCAL_SERVER_START_TIMEOUT_S = 60.0
+_PUBLIC_TUNNEL_START_TIMEOUT_S = 60.0
+_POLL_INTERVAL_S = 3.0
 _RESTART_DELAY_S = 1.0
 
 # (label, config_key, env_var, is_secret, required)
@@ -55,9 +55,11 @@ class SetupApp(tk.Tk):
         self._uvicorn_error: str | None = None
         self._hidden_streams: list[object] = []
         self._vars: dict[str, tk.StringVar] = {}
+        self._log_path = self._init_log_file()
         self._build_ui()
         self._load()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._append_log("GUI started")
 
     def _build_ui(self) -> None:
         pad = {"padx": 16, "pady": 5}
@@ -160,8 +162,12 @@ class SetupApp(tk.Tk):
         if CONFIG_PATH.exists():
             try:
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+                self._append_log(f"Config loaded from {CONFIG_PATH}")
             except Exception:
                 data = {}
+                self._append_log(f"Config unreadable: {CONFIG_PATH}")
+        else:
+            self._append_log("No config file found, using defaults")
         for key, var in self._vars.items():
             val = data.get(key, "")
             if key == "reports_dir" and not val:
@@ -222,6 +228,7 @@ class SetupApp(tk.Tk):
 
         env = self._build_env(data)
         os.environ.update(env)
+        os.environ["GUI_LOG_PATH"] = str(self._log_path)
         self._uvicorn_error = None
         self._set_status("starting_server")
         self._start_btn.config(state="disabled")
@@ -229,10 +236,12 @@ class SetupApp(tk.Tk):
         self._stop_btn.config(state="normal")
         self._qr_canvas.grid_remove()
 
+        self._append_log("User pressed Start — launching server")
         threading.Thread(target=self._run_uvicorn, daemon=True).start()
         threading.Thread(target=self._start_tunnel_when_server_ready, daemon=True).start()
 
     def _restart(self) -> None:
+        self._append_log("User requested restart")
         self._set_status("restarting")
         self._start_btn.config(state="disabled")
         self._restart_btn.config(state="disabled")
@@ -267,6 +276,7 @@ class SetupApp(tk.Tk):
             )
             server = uvicorn.Server(config)
             self._uvicorn_server = server
+            self._append_log("Uvicorn starting on 127.0.0.1:8001")
             server.run()
             if not server.should_exit and self._uvicorn_error is None:
                 self._fail_startup(
@@ -280,6 +290,7 @@ class SetupApp(tk.Tk):
 
     def _start_tunnel_when_server_ready(self) -> None:
         self.after(0, lambda: self._set_status_detail("Đang kiểm tra máy chủ cục bộ..."))
+        _t0 = time.monotonic()
         if not self._wait_until_ready(
             self._local_server_ready,
             timeout_s=_LOCAL_SERVER_START_TIMEOUT_S,
@@ -290,11 +301,13 @@ class SetupApp(tk.Tk):
                 )
             return
 
+        self._append_log(f"Local server ready after {time.monotonic() - _t0:.1f}s")
         self.after(0, lambda: self._set_status("starting_tunnel"))
         self.after(0, lambda: self._set_status_detail("Máy chủ cục bộ đã sẵn sàng. Đang khởi động tunnel..."))
 
         try:
             cf_path = self._get_cloudflared()
+            self._append_log(f"Starting cloudflared: {cf_path}")
             self._tunnel_proc = subprocess.Popen(
                 [cf_path, "tunnel", "--url", "http://localhost:8001"],
                 stdin=subprocess.DEVNULL,
@@ -329,6 +342,7 @@ class SetupApp(tk.Tk):
             match = _TUNNEL_URL_RE.search(line)
             if match:
                 url = match.group(0)
+                self._append_log(f"Tunnel URL obtained: {url}")
                 self.after(0, lambda: self._set_status("checking_public"))
                 self.after(0, lambda: self._set_status_detail("Đã có URL tunnel. Đang kiểm tra truy cập public..."))
                 threading.Thread(
@@ -352,18 +366,22 @@ class SetupApp(tk.Tk):
         def public_url_ready() -> bool:
             return self._http_ok(url)
 
+        _t0 = time.monotonic()
         if not self._wait_until_ready(
             public_url_ready,
             timeout_s=_PUBLIC_TUNNEL_START_TIMEOUT_S,
         ):
+            self._append_log(f"Public URL not reachable after {_PUBLIC_TUNNEL_START_TIMEOUT_S}s: {url}")
             self._fail_startup(
                 "Đường dẫn public chưa sẵn sàng cho người dùng. Vui lòng khởi động lại máy chủ."
             )
             return
 
+        self._append_log(f"Public URL verified after {time.monotonic() - _t0:.1f}s: {url}")
         self.after(0, lambda value=url: self._on_tunnel_ready(value))
 
     def _on_tunnel_ready(self, url: str) -> None:
+        self._append_log(f"System ready — serving at {url}")
         self._status_var.set(url)
         self._status_lbl.config(fg="#1a7a1a")
         self._detail_var.set("Sẵn sàng cho người dùng truy cập.")
@@ -384,10 +402,12 @@ class SetupApp(tk.Tk):
             from update_cors import update_cors
 
             update_cors(url)
+            self._append_log(f"CORS updated for {url}")
         except Exception:
-            self._append_log("Cập nhật CORS thất bại nhưng không chặn vận hành.")
+            self._append_log("CORS update failed (non-blocking)")
 
     def _stop(self) -> None:
+        self._append_log("User stopped server")
         self._stop_background_processes()
         self._uvicorn_error = None
         self._set_status("stopped")
@@ -455,10 +475,17 @@ class SetupApp(tk.Tk):
         return False
 
     def _append_log(self, message: str) -> None:
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with LOG_PATH.open("a", encoding="utf-8") as handle:
+        with self._log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{timestamp}] {message}\n")
+
+    def _init_log_file(self) -> Path:
+        log_dir = _ROOT / "runtime" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(log_dir.glob("*.log"), key=lambda p: p.stat().st_mtime)
+        for old in existing[:max(0, len(existing) - (_MAX_LOG_FILES - 1))]:
+            old.unlink(missing_ok=True)
+        return log_dir / time.strftime("%d-%m-%Y_%H%M%S.log")
 
     def _set_status_detail(self, message: str) -> None:
         self._detail_var.set(message)
@@ -512,7 +539,7 @@ class SetupApp(tk.Tk):
             case "crashed":
                 self._status_var.set(
                     detail
-                    or f"Khởi động thất bại. Xem log tại {LOG_PATH} và khởi động lại máy chủ."
+                    or f"Khởi động thất bại. Xem log tại {self._log_path} và khởi động lại máy chủ."
                 )
                 self._detail_var.set("Có lỗi trong quá trình kiểm tra sẵn sàng. Vui lòng bấm Khởi động lại.")
                 self._status_lbl.config(fg="#cc0000")
@@ -522,5 +549,6 @@ class SetupApp(tk.Tk):
                 self._qr_canvas.grid_remove()
 
     def _on_close(self) -> None:
+        self._append_log("GUI closed by user")
         self._stop()
         self.destroy()
