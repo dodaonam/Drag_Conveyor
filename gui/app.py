@@ -11,9 +11,7 @@ import traceback
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
-import socket
 from urllib import request
-from urllib.parse import urlparse
 
 import qrcode
 
@@ -361,13 +359,7 @@ class SetupApp(tk.Tk):
                     url_found = True
                     url = match.group(0)
                     self._append_log(f"Tunnel URL obtained: {url}")
-                    self.after(0, lambda: self._set_status("checking_public"))
-                    self.after(0, lambda: self._set_status_detail("Đã có URL tunnel. Đang kiểm tra truy cập public..."))
-                    threading.Thread(
-                        target=self._verify_public_url_then_ready,
-                        args=(url,),
-                        daemon=True,
-                    ).start()
+                    self.after(0, lambda value=url: self._on_tunnel_ready(value))
             # keep draining stdout until cloudflared exits
 
         exit_code = self._tunnel_proc.poll()
@@ -386,38 +378,6 @@ class SetupApp(tk.Tk):
         if last_line:
             detail = f"{detail} Dòng cuối: {last_line}"
         self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
-
-    def _verify_public_url_then_ready(self, url: str) -> None:
-        hostname = urlparse(url).hostname or ""
-        if hostname:
-            try:
-                ip = socket.gethostbyname(hostname)
-                self._append_log(f"DNS check: {hostname} -> {ip}")
-            except Exception as exc:
-                self._append_log(f"DNS check FAILED: {hostname}: {exc}")
-
-        _last_err: list[str] = []
-
-        def public_url_ready() -> bool:
-            try:
-                with request.urlopen(url, timeout=5) as response:
-                    ok = 200 <= response.status < 400
-                    if not ok:
-                        _last_err.append(f"HTTP {response.status}")
-                    return ok
-            except Exception as exc:
-                err = f"{type(exc).__name__}: {exc}"
-                if not _last_err or _last_err[-1] != err:
-                    self._append_log(f"Public URL check failed: {err}")
-                    _last_err.append(err)
-                return False
-
-        _t0 = time.monotonic()
-        if not self._wait_until_ready(public_url_ready):
-            return
-
-        self._append_log(f"Public URL verified after {time.monotonic() - _t0:.1f}s: {url}")
-        self.after(0, lambda value=url: self._on_tunnel_ready(value))
 
     def _on_tunnel_ready(self, url: str) -> None:
         self._append_log(f"System ready — serving at {url}")
@@ -559,11 +519,6 @@ class SetupApp(tk.Tk):
             case "starting_tunnel":
                 self._status_var.set("Máy chủ cục bộ đã sẵn sàng. Đang tạo đường dẫn public...")
                 self._detail_var.set("Đang chờ cloudflared cấp URL tunnel...")
-                self._status_lbl.config(fg="#888888")
-                self._qr_canvas.grid_remove()
-            case "checking_public":
-                self._status_var.set("Đang tự kiểm tra kết nối public trước khi hiển thị QR...")
-                self._detail_var.set("Đang thử mở URL public giống như người dùng sẽ truy cập...")
                 self._status_lbl.config(fg="#888888")
                 self._qr_canvas.grid_remove()
             case "restarting":
