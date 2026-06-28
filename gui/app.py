@@ -298,6 +298,7 @@ class SetupApp(tk.Tk):
 
         try:
             cf_path = self._get_cloudflared()
+            self._kill_existing_cloudflared()
             self._append_log(f"Starting cloudflared: {cf_path}")
             self._tunnel_proc = subprocess.Popen(
                 [cf_path, "tunnel", "--url", "http://localhost:8001"],
@@ -320,6 +321,25 @@ class SetupApp(tk.Tk):
         cf = _ROOT / "bin" / "cloudflared.exe"
         return str(cf) if cf.exists() else "cloudflared"
 
+    def _kill_existing_cloudflared(self) -> None:
+        import platform
+        try:
+            if platform.system() == "Windows":
+                subprocess.run(
+                    ["taskkill", "/f", "/im", "cloudflared.exe", "/t"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            else:
+                subprocess.run(
+                    ["pkill", "-f", "cloudflared"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            pass
+
     def _watch_tunnel(self) -> None:
         if self._tunnel_proc is None or self._tunnel_proc.stdout is None:
             self._fail_startup(
@@ -328,30 +348,34 @@ class SetupApp(tk.Tk):
             return
 
         last_line = ""
+        url_found = False
         for line in self._tunnel_proc.stdout:
             last_line = line.strip()
-            match = _TUNNEL_URL_RE.search(line)
-            if match:
-                url = match.group(0)
-                self._append_log(f"Tunnel URL obtained: {url}")
-                self.after(0, lambda: self._set_status("checking_public"))
-                self.after(0, lambda: self._set_status_detail("Đã có URL tunnel. Đang kiểm tra truy cập public..."))
-                threading.Thread(
-                    target=self._verify_public_url_then_ready,
-                    args=(url,),
-                    daemon=True,
-                ).start()
-                return
+            if not url_found:
+                match = _TUNNEL_URL_RE.search(line)
+                if match:
+                    url_found = True
+                    url = match.group(0)
+                    self._append_log(f"Tunnel URL obtained: {url}")
+                    self.after(0, lambda: self._set_status("checking_public"))
+                    self.after(0, lambda: self._set_status_detail("Đã có URL tunnel. Đang kiểm tra truy cập public..."))
+                    threading.Thread(
+                        target=self._verify_public_url_then_ready,
+                        args=(url,),
+                        daemon=True,
+                    ).start()
+            # keep draining stdout until cloudflared exits
 
         if self._uvicorn_error is not None:
             return
 
-        detail = "Không lấy được đường dẫn public từ cloudflared."
-        if self._tunnel_proc.poll() is not None:
-            detail = f"{detail} Mã thoát: {self._tunnel_proc.returncode}."
-        if last_line:
-            detail = f"{detail} Dòng cuối: {last_line}"
-        self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
+        if not url_found:
+            detail = "Không lấy được đường dẫn public từ cloudflared."
+            if self._tunnel_proc.poll() is not None:
+                detail = f"{detail} Mã thoát: {self._tunnel_proc.returncode}."
+            if last_line:
+                detail = f"{detail} Dòng cuối: {last_line}"
+            self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
 
     def _verify_public_url_then_ready(self, url: str) -> None:
         def public_url_ready() -> bool:
@@ -403,6 +427,10 @@ class SetupApp(tk.Tk):
         if self._tunnel_proc is not None:
             try:
                 self._tunnel_proc.terminate()
+                self._tunnel_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._tunnel_proc.kill()
+                self._tunnel_proc.wait()
             except Exception:
                 pass
             self._tunnel_proc = None
