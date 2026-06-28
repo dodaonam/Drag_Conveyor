@@ -51,6 +51,7 @@ class SetupApp(tk.Tk):
         self._tunnel_proc: subprocess.Popen | None = None
         self._uvicorn_server = None
         self._uvicorn_error: str | None = None
+        self._stopping: bool = False
         self._hidden_streams: list[object] = []
         self._vars: dict[str, tk.StringVar] = {}
         self._log_path = self._init_log_file()
@@ -228,6 +229,7 @@ class SetupApp(tk.Tk):
         os.environ.update(env)
         os.environ["GUI_LOG_PATH"] = str(self._log_path)
         self._uvicorn_error = None
+        self._stopping = False
         self._set_status("starting_server")
         self._start_btn.config(state="disabled")
         self._restart_btn.config(state="disabled")
@@ -364,12 +366,13 @@ class SetupApp(tk.Tk):
 
         exit_code = self._tunnel_proc.poll()
         if url_found:
-            self._fail_startup(
-                f"cloudflared đã thoát bất ngờ (code={exit_code}). "
-                "Tunnel không còn hoạt động. Vui lòng khởi động lại máy chủ."
-            )
+            if not self._stopping:
+                self._fail_startup(
+                    f"cloudflared đã thoát bất ngờ (code={exit_code}). "
+                    "Tunnel không còn hoạt động. Vui lòng khởi động lại máy chủ."
+                )
             return
-        if self._uvicorn_error is not None:
+        if self._uvicorn_error is not None or self._stopping:
             return
 
         detail = "Không lấy được đường dẫn public từ cloudflared."
@@ -406,6 +409,7 @@ class SetupApp(tk.Tk):
             self._append_log(f"CORS update failed: {traceback.format_exc()}")
 
     def _stop(self) -> None:
+        self._stopping = True
         self._append_log("User stopped server")
         self._stop_background_processes()
         self._uvicorn_error = None
