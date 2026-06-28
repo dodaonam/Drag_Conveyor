@@ -301,7 +301,7 @@ class SetupApp(tk.Tk):
             self._kill_existing_cloudflared()
             self._append_log(f"Starting cloudflared: {cf_path}")
             self._tunnel_proc = subprocess.Popen(
-                [cf_path, "tunnel", "--url", "http://localhost:8001"],
+                [cf_path, "tunnel", "--url", "http://127.0.0.1:8001"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
