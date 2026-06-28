@@ -11,7 +11,9 @@ import traceback
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
+import socket
 from urllib import request
+from urllib.parse import urlparse
 
 import qrcode
 
@@ -370,7 +372,10 @@ class SetupApp(tk.Tk):
 
         exit_code = self._tunnel_proc.poll()
         if url_found:
-            self._append_log(f"cloudflared exited unexpectedly (code={exit_code})")
+            self._fail_startup(
+                f"cloudflared đã thoát bất ngờ (code={exit_code}). "
+                "Tunnel không còn hoạt động. Vui lòng khởi động lại máy chủ."
+            )
             return
         if self._uvicorn_error is not None:
             return
@@ -383,6 +388,14 @@ class SetupApp(tk.Tk):
         self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
 
     def _verify_public_url_then_ready(self, url: str) -> None:
+        hostname = urlparse(url).hostname or ""
+        if hostname:
+            try:
+                ip = socket.gethostbyname(hostname)
+                self._append_log(f"DNS check: {hostname} -> {ip}")
+            except Exception as exc:
+                self._append_log(f"DNS check FAILED: {hostname}: {exc}")
+
         _last_err: list[str] = []
 
         def public_url_ready() -> bool:
