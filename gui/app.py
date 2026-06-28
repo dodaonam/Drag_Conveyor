@@ -326,14 +326,30 @@ class SetupApp(tk.Tk):
         self.after(0, lambda: self._set_status("starting_tunnel"))
 
         cf_path = self._get_cloudflared()
+        tunnel_id = self._load_setting("cf_tunnel_id")
         tunnel_name = self._load_setting("cf_tunnel_name")
-        if not tunnel_name:
+        if not tunnel_id and not tunnel_name:
             self._fail_startup(
                 "Chưa thiết lập Cloudflare Tunnel. Bấm 'Thiết lập Cloudflare' trước khi khởi động."
             )
             return
 
-        cmd = [cf_path, "tunnel", "run", "--url", "http://localhost:8001", tunnel_name]
+        if tunnel_id:
+            creds_path = Path.home() / ".cloudflared" / f"{tunnel_id}.json"
+            if not creds_path.exists():
+                self._fail_startup(
+                    "Credentials cloudflared không tìm thấy. Bấm 'Thiết lập Cloudflare' để thiết lập lại."
+                )
+                return
+            cmd = [
+                cf_path, "tunnel", "run",
+                "--url", "http://localhost:8001",
+                "--credentials-file", str(creds_path),
+                tunnel_id,
+            ]
+        else:
+            # Fallback for old configs created before this fix.
+            cmd = [cf_path, "tunnel", "run", "--url", "http://localhost:8001", tunnel_name]
 
         try:
             self._tunnel_proc = subprocess.Popen(
@@ -443,7 +459,7 @@ class SetupApp(tk.Tk):
         ).start()
 
     def _setup_cloudflare_tunnel(self, api_token_from_form: str) -> None:
-        """One-time setup: create named tunnel via API token. Runs in a background thread."""
+        """One-time setup: create named tunnel via Cloudflare REST API. Runs in a background thread."""
         self.after(0, lambda: self._cf_setup_btn.config(state="disabled"))
 
         api_token = api_token_from_form or self._load_setting("cf_api_token")
@@ -454,10 +470,7 @@ class SetupApp(tk.Tk):
             ))
             return
 
-        cf_path = self._get_cloudflared()
-        self.after(0, lambda: self._set_status_detail("Thiết lập Cloudflare: Đang tạo tunnel..."))
-
-        cf_uuid = self._create_or_find_tunnel(cf_path, api_token)
+        cf_uuid = self._create_or_find_tunnel_api(api_token)
         if not cf_uuid:
             self.after(0, lambda: self._cf_setup_btn.config(state="normal"))
             return
@@ -465,72 +478,104 @@ class SetupApp(tk.Tk):
         tunnel_url = f"https://{cf_uuid}.cfargotunnel.com"
         self._write_config({
             "cf_tunnel_name": _CF_TUNNEL_NAME,
+            "cf_tunnel_id": cf_uuid,
             "cf_tunnel_url": tunnel_url,
             "cf_api_token": api_token,
         })
         self.after(0, lambda u=tunnel_url: self._on_cf_setup_complete(u))
 
-    def _create_or_find_tunnel(self, cf_path: str, api_token: str) -> str | None:
+    def _create_or_find_tunnel_api(self, api_token: str) -> str | None:
         """
-        Try to create the named tunnel via API token. If the name already exists,
-        find its UUID from `tunnel list`. Returns the UUID string, or None on error.
+        Create or find named tunnel via Cloudflare REST API (no cloudflared CLI needed).
+        Writes ~/.cloudflared/<uuid>.json credentials so cloudflared runtime needs no cert.pem.
+        Returns UUID or None on error.
         """
-        env = {**os.environ, "CLOUDFLARE_API_TOKEN": api_token}
-        proc = subprocess.run(
-            [cf_path, "tunnel", "create", _CF_TUNNEL_NAME],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        combined = proc.stdout + proc.stderr
+        import base64
+        import secrets
+        import urllib.error
 
-        # Happy path: "Created tunnel <name> with id <uuid>"
-        match = re.search(
-            r"with id ([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})",
-            combined,
-        )
-        if match:
-            return match.group(1)
+        def cf_api(method: str, path: str, body: dict | None = None) -> dict:
+            url = f"https://api.cloudflare.com/client/v4{path}"
+            data = json.dumps(body).encode() if body else None
+            req = request.Request(
+                url, data=data, method=method,
+                headers={
+                    "Authorization": f"Bearer {api_token}",
+                    "Content-Type": "application/json",
+                },
+            )
+            try:
+                with request.urlopen(req, timeout=30) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                try:
+                    return json.loads(e.read())
+                except Exception:
+                    return {"success": False, "errors": [{"message": f"HTTP {e.code}"}]}
+            except Exception as e:
+                return {"success": False, "errors": [{"message": str(e)}]}
 
-        # Name already exists — reuse it.
-        if "already exist" in combined.lower():
-            cf_uuid = self._find_tunnel_uuid(cf_path, _CF_TUNNEL_NAME, api_token)
-            if cf_uuid:
-                return cf_uuid
-            self.after(0, lambda: self._set_status_detail(
-                f"Lỗi: Không tìm được UUID của tunnel '{_CF_TUNNEL_NAME}'. Kiểm tra kết nối mạng."
+        # Step 1: Validate token and get account ID.
+        self.after(0, lambda: self._set_status_detail("Thiết lập Cloudflare: Đang xác thực token..."))
+        acc_resp = cf_api("GET", "/accounts?per_page=1")
+        if not acc_resp.get("success") or not acc_resp.get("result"):
+            msg = (acc_resp.get("errors") or [{"message": "unknown"}])[0].get("message", "unknown")
+            self.after(0, lambda m=msg: self._set_status_detail(
+                f"Lỗi xác thực: {m} — Kiểm tra API Token có quyền Account:Read không."
+            ))
+            return None
+        account_id = acc_resp["result"][0]["id"]
+
+        # Step 2: Check if tunnel already exists with local credentials file.
+        self.after(0, lambda: self._set_status_detail("Thiết lập Cloudflare: Đang kiểm tra tunnel..."))
+        list_resp = cf_api(
+            "GET",
+            f"/accounts/{account_id}/cfd_tunnel?name={_CF_TUNNEL_NAME}&is_deleted=false",
+        )
+        if list_resp.get("success") and list_resp.get("result"):
+            for t in list_resp["result"]:
+                tid = t["id"]
+                if (Path.home() / ".cloudflared" / f"{tid}.json").exists():
+                    return tid  # Already fully set up — reuse.
+            # Tunnel exists on Cloudflare but no local credentials → delete and recreate.
+            for t in list_resp["result"]:
+                cf_api("DELETE", f"/accounts/{account_id}/cfd_tunnel/{t['id']}")
+
+        # Step 3: Create new tunnel.
+        self.after(0, lambda: self._set_status_detail("Thiết lập Cloudflare: Đang tạo tunnel..."))
+        tunnel_secret = base64.b64encode(secrets.token_bytes(32)).decode()
+        create_resp = cf_api(
+            "POST",
+            f"/accounts/{account_id}/cfd_tunnel",
+            body={"name": _CF_TUNNEL_NAME, "tunnel_secret": tunnel_secret},
+        )
+        if not create_resp.get("success") or not create_resp.get("result"):
+            msg = (create_resp.get("errors") or [{"message": "unknown"}])[0].get("message", "unknown")
+            self.after(0, lambda m=msg: self._set_status_detail(f"Lỗi tạo tunnel: {m}"))
+            return None
+
+        tunnel = create_resp["result"]
+        tunnel_id = tunnel["id"]
+        account_tag = tunnel["account_tag"]
+
+        # Step 4: Write credentials JSON so cloudflared runtime needs no cert.pem or API token.
+        creds = {
+            "AccountTag": account_tag,
+            "TunnelID": tunnel_id,
+            "TunnelName": _CF_TUNNEL_NAME,
+            "TunnelSecret": tunnel_secret,
+        }
+        creds_path = Path.home() / ".cloudflared" / f"{tunnel_id}.json"
+        try:
+            creds_path.parent.mkdir(parents=True, exist_ok=True)
+            creds_path.write_text(json.dumps(creds), encoding="utf-8")
+        except Exception as e:
+            self.after(0, lambda m=str(e): self._set_status_detail(
+                f"Lỗi ghi credentials: {m}"
             ))
             return None
 
-        # Other error.
-        snippet = combined[:300]
-        self.after(0, lambda msg=snippet: self._set_status_detail(
-            f"Lỗi khi tạo tunnel: {msg}"
-        ))
-        return None
-
-    def _find_tunnel_uuid(self, cf_path: str, name: str, api_token: str) -> str | None:
-        """Return the UUID of an existing tunnel by name, or None."""
-        env = {**os.environ, "CLOUDFLARE_API_TOKEN": api_token}
-        proc = subprocess.run(
-            [cf_path, "tunnel", "list", "--output", "json"],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        try:
-            for t in json.loads(proc.stdout):
-                if t.get("name") == name:
-                    return t.get("id")
-        except Exception:
-            pass
-        # Fallback: text parse for "tunnel list" without JSON support.
-        m = re.search(
-            r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\s+"
-            + re.escape(name),
-            proc.stdout + proc.stderr,
-        )
-        return m.group(1) if m else None
+        return tunnel_id
 
     def _on_cf_setup_complete(self, tunnel_url: str) -> None:
         """Called on the GUI thread after successful setup."""
