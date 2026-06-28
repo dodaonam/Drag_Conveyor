@@ -351,6 +351,8 @@ class SetupApp(tk.Tk):
         url_found = False
         for line in self._tunnel_proc.stdout:
             last_line = line.strip()
+            if last_line:
+                self._append_log(f"[cloudflared] {last_line}")
             if not url_found:
                 match = _TUNNEL_URL_RE.search(line)
                 if match:
