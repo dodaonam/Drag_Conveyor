@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -52,6 +53,7 @@ class SetupApp(tk.Tk):
         self._uvicorn_server = None
         self._uvicorn_error: str | None = None
         self._stopping: bool = False
+        self._server_gen: int = 0
         self._hidden_streams: list[object] = []
         self._vars: dict[str, tk.StringVar] = {}
         self._log_path = self._init_log_file()
@@ -230,6 +232,8 @@ class SetupApp(tk.Tk):
         os.environ["GUI_LOG_PATH"] = str(self._log_path)
         self._uvicorn_error = None
         self._stopping = False
+        self._server_gen += 1
+        my_gen = self._server_gen
         self._set_status("starting_server")
         self._start_btn.config(state="disabled")
         self._restart_btn.config(state="disabled")
@@ -238,7 +242,7 @@ class SetupApp(tk.Tk):
 
         self._append_log("User pressed Start — launching server")
         threading.Thread(target=self._run_uvicorn, daemon=True).start()
-        threading.Thread(target=self._start_tunnel_when_server_ready, daemon=True).start()
+        threading.Thread(target=lambda: self._start_tunnel_when_server_ready(my_gen), daemon=True).start()
 
     def _restart(self) -> None:
         self._append_log("User requested restart")
@@ -249,6 +253,7 @@ class SetupApp(tk.Tk):
         threading.Thread(target=self._restart_worker, daemon=True).start()
 
     def _restart_worker(self) -> None:
+        self._stopping = True
         self._stop_background_processes()
         self._uvicorn_error = None
         time.sleep(_RESTART_DELAY_S)
@@ -288,7 +293,7 @@ class SetupApp(tk.Tk):
                 include_traceback=True,
             )
 
-    def _start_tunnel_when_server_ready(self) -> None:
+    def _start_tunnel_when_server_ready(self, gen: int) -> None:
         self.after(0, lambda: self._set_status_detail("Đang kiểm tra máy chủ cục bộ..."))
         _t0 = time.monotonic()
         if not self._wait_until_ready(self._local_server_ready):
@@ -310,6 +315,10 @@ class SetupApp(tk.Tk):
                 text=True,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            try:
+                (_ROOT / "runtime" / "cloudflared.pid").write_text(str(self._tunnel_proc.pid))
+            except Exception:
+                pass
         except Exception:
             self._fail_startup(
                 "Không thể khởi động cloudflared. Vui lòng khởi động lại máy chủ.",
@@ -317,32 +326,36 @@ class SetupApp(tk.Tk):
             )
             return
 
-        threading.Thread(target=self._watch_tunnel, daemon=True).start()
+        threading.Thread(target=lambda: self._watch_tunnel(gen), daemon=True).start()
 
     def _get_cloudflared(self) -> str:
         cf = _ROOT / "bin" / "cloudflared.exe"
         return str(cf) if cf.exists() else "cloudflared"
 
     def _kill_existing_cloudflared(self) -> None:
-        import platform
+        """Kill only the cloudflared PID we tracked in the previous session, not all instances."""
+        pid_file = _ROOT / "runtime" / "cloudflared.pid"
+        if not pid_file.exists():
+            return
         try:
+            pid = int(pid_file.read_text().strip())
+            import platform
             if platform.system() == "Windows":
                 subprocess.run(
-                    ["taskkill", "/f", "/im", "cloudflared.exe", "/t"],
+                    ["taskkill", "/pid", str(pid), "/f"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             else:
-                subprocess.run(
-                    ["pkill", "-f", "cloudflared"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+                import signal
+                os.kill(pid, signal.SIGTERM)
         except Exception:
             pass
+        finally:
+            pid_file.unlink(missing_ok=True)
 
-    def _watch_tunnel(self) -> None:
+    def _watch_tunnel(self, gen: int) -> None:
         if self._tunnel_proc is None or self._tunnel_proc.stdout is None:
             self._fail_startup(
                 "Không đọc được trạng thái cloudflared. Vui lòng khởi động lại máy chủ."
@@ -366,13 +379,13 @@ class SetupApp(tk.Tk):
 
         exit_code = self._tunnel_proc.poll()
         if url_found:
-            if not self._stopping:
+            if not self._stopping and gen == self._server_gen:
                 self._fail_startup(
                     f"cloudflared đã thoát bất ngờ (code={exit_code}). "
                     "Tunnel không còn hoạt động. Vui lòng khởi động lại máy chủ."
                 )
             return
-        if self._uvicorn_error is not None or self._stopping:
+        if self._uvicorn_error is not None or self._stopping or gen != self._server_gen:
             return
 
         detail = "Không lấy được đường dẫn public từ cloudflared."
@@ -429,6 +442,7 @@ class SetupApp(tk.Tk):
             except Exception:
                 pass
             self._tunnel_proc = None
+            (_ROOT / "runtime" / "cloudflared.pid").unlink(missing_ok=True)
 
     def _show_qr(self, url: str) -> None:
         qr = qrcode.QRCode(border=2)
@@ -457,12 +471,15 @@ class SetupApp(tk.Tk):
     def _ensure_standard_streams(self) -> None:
         for name in ("stdout", "stderr"):
             if getattr(sys, name) is None:
-                stream = open(os.devnull, "w", encoding="utf-8", buffering=1)
+                stream = io.StringIO()
                 setattr(sys, name, stream)
                 self._hidden_streams.append(stream)
 
     def _local_server_ready(self) -> bool:
-        return self._http_ok(_LOCAL_SERVER_URL, log_errors=True)
+        return (
+            self._uvicorn_server is not None
+            and getattr(self._uvicorn_server, "started", False)
+        )
 
     def _http_ok(self, url: str, *, log_errors: bool = False) -> bool:
         try:

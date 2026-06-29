@@ -13,10 +13,12 @@ ALWAYS_ALLOWED = [
 def update_cors(tunnel_url: str | None = None) -> None:
     import boto3
     from botocore.config import Config
+    import settings  # lazy — load_dotenv phải chạy trước khi import
 
+    endpoint = settings.R2_ENDPOINT_URL
     s3 = boto3.client(
         "s3",
-        endpoint_url=os.environ["R2_ENDPOINT_URL"],
+        endpoint_url=endpoint,
         aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
         aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
         region_name="auto",
