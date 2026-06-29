@@ -33,13 +33,11 @@ jobs:
           Set-Location C:\pi_src\bootloader
           uv run python waf all --target-arch=64bit
           Set-Location $env:GITHUB_WORKSPACE
-          $buildOut = Get-ChildItem C:\pi_src\bootloader\build -Recurse -Filter runw.exe |
-                      Where-Object { $_.FullName -match "64bit" } |
-                      Select-Object -First 1
-          if (-not $buildOut) { throw "waf build output not found - check compiler errors above" }
-          $src = $buildOut.DirectoryName
-          Copy-Item "$src\run.exe"  "$bootDir\run.exe"  -Force
-          Copy-Item "$src\runw.exe" "$bootDir\runw.exe" -Force
+          $run  = "C:\pi_src\bootloader\build\release\run.exe"
+          $runw = "C:\pi_src\bootloader\build\releasew\runw.exe"
+          if (-not (Test-Path $runw)) { throw "runw.exe not found at $runw" }
+          Copy-Item $run  "$bootDir\run.exe"  -Force
+          Copy-Item $runw "$bootDir\runw.exe" -Force
           Remove-Item C:\pi_src -Recurse -Force
 
       - name: Build with PyInstaller
