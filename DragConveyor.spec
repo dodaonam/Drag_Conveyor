@@ -1,5 +1,6 @@
 # DragConveyor.spec
 # Chạy trên Windows: build_windows.bat
+import glob, os
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 block_cipher = None
@@ -13,8 +14,11 @@ a = Analysis(
         ("config/base_profile.json",  "config"),
         # Few-shot example images cho VLM classification (dùng trong production)
         ("data/example",              "data/example"),
-        # Model weights (3 size variants)
-        ("weights",                   "weights"),
+        # Model weights (3 size variants) — chỉ .onnx, không bundle .pt (pickle, không dùng)
+        *[
+            (f, os.path.dirname(f))
+            for f in glob.glob("weights/**/*.onnx", recursive=True)
+        ],
         # Frontend static files
         ("server/static",             "server/static"),
         # Server Python files — bundled as datas (không phải package thông thường,
@@ -98,15 +102,16 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,          # giảm ~30% kích thước; nếu antivirus false-positive thì đổi False
+    upx=False,         # tắt UPX để tránh false-positive antivirus (UPX packing = dấu hiệu dropper)
     console=False,     # ẩn console window (windowed app)
-    # icon="gui/icon.ico",  # bỏ comment khi có file icon
+    icon="gui/icon.ico",
+    version="version_info.txt",
 )
 
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="DragConveyor",
 )

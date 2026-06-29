@@ -10,18 +10,12 @@ ALWAYS_ALLOWED = [
 ]
 
 
-def _clean_endpoint(raw: str) -> str:
-    url = raw.strip().strip('"').strip("'").strip()
-    if not url.startswith(("http://", "https://")):
-        url = f"https://{url}"
-    return url.rstrip("/")
-
-
 def update_cors(tunnel_url: str | None = None) -> None:
     import boto3
     from botocore.config import Config
+    import settings  # lazy — load_dotenv phải chạy trước khi import
 
-    endpoint = _clean_endpoint(os.environ["R2_ENDPOINT_URL"])
+    endpoint = settings.R2_ENDPOINT_URL
     s3 = boto3.client(
         "s3",
         endpoint_url=endpoint,
