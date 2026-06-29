@@ -23,12 +23,12 @@ jobs:
           uv pip install pyinstaller
 
       - name: Rebuild PyInstaller bootloader from source
-        shell: powershell
+        shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $piVersion = uv run python -c "import PyInstaller; print(PyInstaller.__version__)"
           $bootDir   = uv run python -c "import PyInstaller, os; print(os.path.join(os.path.dirname(PyInstaller.__file__), 'bootloader', 'Windows-64bit-intel'))"
-          Write-Host "PyInstaller $piVersion — bootloader dir: $bootDir"
+          Write-Host "PyInstaller $piVersion - bootloader dir: $bootDir"
           git clone --depth 1 --branch "v$piVersion" https://github.com/pyinstaller/pyinstaller.git C:\pi_src
           Set-Location C:\pi_src\bootloader
           uv run python waf all --target-arch=64bit
@@ -36,7 +36,7 @@ jobs:
           $buildOut = Get-ChildItem C:\pi_src\bootloader\build -Recurse -Filter runw.exe |
                       Where-Object { $_.FullName -match "64bit" } |
                       Select-Object -First 1
-          if (-not $buildOut) { throw "waf build output not found — check compiler errors above" }
+          if (-not $buildOut) { throw "waf build output not found - check compiler errors above" }
           $src = $buildOut.DirectoryName
           Copy-Item "$src\run.exe"  "$bootDir\run.exe"  -Force
           Copy-Item "$src\runw.exe" "$bootDir\runw.exe" -Force
