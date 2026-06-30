@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync
-          uv pip install "nuitka>=4.0,<4.1" ordered-set pywin32 Nuitka-winsvc
+          uv pip install ordered-set pywin32 Nuitka-winsvc
 
       # ── Build tunnel_service (Nuitka-winsvc standalone) ──────────────────────
       - name: Build tunnel_service

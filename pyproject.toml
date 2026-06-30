@@ -23,7 +23,7 @@ gui = [
     "qrcode>=8.2",
 ]
 build = [
-    "nuitka>=4.0,<4.1",
+    "Nuitka-winsvc",
     "ordered-set>=4.1",
 ]
 tunnel-service = [

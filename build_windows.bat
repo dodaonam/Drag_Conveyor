@@ -46,7 +46,7 @@ echo [1/5] Installing dependencies...
 uv sync
 if errorlevel 1 ( echo [ERROR] uv sync failed & exit /b 1 )
 
-uv pip install "nuitka>=4.0,<4.1" ordered-set
+uv pip install ordered-set Nuitka-winsvc
 if errorlevel 1 ( echo [ERROR] nuitka install failed & exit /b 1 )
 
 :: ── Step 2: Build DragConveyor with Nuitka ───────────────────────────────────
