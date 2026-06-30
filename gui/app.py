@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import json
 import os
 import sys
@@ -41,12 +40,19 @@ FIELDS: list[tuple[str, str, str, bool, bool]] = [
 ]
 
 
+_advapi32_cache: "tuple | None" = None
+_svc_status_cls = None
+
+
 def _advapi32():
-    """Return (advapi32 WinDLL, ctypes module) with restype/argtypes declared.
+    """Return cached (advapi32 WinDLL, ctypes module) with restype/argtypes declared.
 
     SC_HANDLE is pointer-sized (8 bytes on 64-bit). Without HANDLE restype
     ctypes defaults to c_int (4 bytes) and truncates handles on 64-bit Windows.
     """
+    global _advapi32_cache
+    if _advapi32_cache is not None:
+        return _advapi32_cache
     import ctypes
     import ctypes.wintypes
     a32 = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -65,7 +71,28 @@ def _advapi32():
     a32.ControlService.argtypes   = [SC_HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
     a32.CloseServiceHandle.restype  = ctypes.wintypes.BOOL
     a32.CloseServiceHandle.argtypes = [SC_HANDLE]
-    return a32, ctypes
+    _advapi32_cache = (a32, ctypes)
+    return _advapi32_cache
+
+
+def _get_svc_status_cls():
+    global _svc_status_cls
+    if _svc_status_cls is None:
+        _, ctypes = _advapi32()
+
+        class _Cls(ctypes.Structure):
+            _fields_ = [
+                ("dwServiceType",             ctypes.c_ulong),
+                ("dwCurrentState",            ctypes.c_ulong),
+                ("dwControlsAccepted",        ctypes.c_ulong),
+                ("dwWin32ExitCode",           ctypes.c_ulong),
+                ("dwServiceSpecificExitCode", ctypes.c_ulong),
+                ("dwCheckPoint",              ctypes.c_ulong),
+                ("dwWaitHint",                ctypes.c_ulong),
+            ]
+
+        _svc_status_cls = _Cls
+    return _svc_status_cls
 
 
 class SetupApp(tk.Tk):
@@ -77,7 +104,6 @@ class SetupApp(tk.Tk):
         self._uvicorn_error: str | None = None
         self._stopping: bool = False
         self._server_gen: int = 0
-        self._hidden_streams: list[object] = []
         self._vars: dict[str, tk.StringVar] = {}
         self._log_path = self._init_log_file()
         self._build_ui()
@@ -312,7 +338,7 @@ class SetupApp(tk.Tk):
             self._uvicorn_server = server
             self._append_log("Uvicorn starting on 127.0.0.1:8001")
             server.run()
-            if not server.should_exit and self._uvicorn_error is None:
+            if not self._stopping and self._uvicorn_error is None:
                 self._fail_startup(
                     "Máy chủ cục bộ dừng ngoài ý muốn. Vui lòng khởi động lại máy chủ."
                 )
@@ -325,6 +351,14 @@ class SetupApp(tk.Tk):
     def _start_tunnel_when_server_ready(self, gen: int) -> None:
         self.after(0, lambda: self._set_status_detail("Đang kiểm tra máy chủ cục bộ..."))
         _t0 = time.monotonic()
+
+        # Stop any stale running service BEFORE clearing the URL file.
+        # If the service is left running from a previous crashed session, StartServiceW
+        # returns 1056 (ALREADY_RUNNING) but the URL file was just deleted — the service
+        # won't rewrite it and _wait_for_tunnel_url would loop forever.
+        # Stopping here also resolves the rapid-restart 1061 (CONTROL_IN_PROGRESS) race:
+        # the stop is sent before the server-ready poll, giving the service time to finish.
+        self._stop_tunnel_service()
 
         # Remove stale tunnel_url.txt from a previous session so we don't read an old URL.
         try:
@@ -344,6 +378,12 @@ class SetupApp(tk.Tk):
         self.after(0, lambda: self._set_status_detail(
             "Máy chủ cục bộ đã sẵn sàng. Đang khởi động tunnel..."
         ))
+
+        if sys.platform != "win32":
+            self.after(0, lambda: self._set_status_detail(
+                "Tunneling chỉ hỗ trợ trên Windows. Truy cập qua http://127.0.0.1:8001"
+            ))
+            return
 
         try:
             self._start_tunnel_service()
@@ -392,19 +432,6 @@ class SetupApp(tk.Tk):
         if sys.platform != "win32":
             return
 
-        import ctypes as _ct
-
-        class _SERVICE_STATUS(_ct.Structure):
-            _fields_ = [
-                ("dwServiceType",             _ct.c_ulong),
-                ("dwCurrentState",            _ct.c_ulong),
-                ("dwControlsAccepted",        _ct.c_ulong),
-                ("dwWin32ExitCode",           _ct.c_ulong),
-                ("dwServiceSpecificExitCode", _ct.c_ulong),
-                ("dwCheckPoint",              _ct.c_ulong),
-                ("dwWaitHint",                _ct.c_ulong),
-            ]
-
         SC_MANAGER_CONNECT   = 0x0001
         SERVICE_STOP         = 0x0020
         SERVICE_CONTROL_STOP = 0x00000001
@@ -418,7 +445,7 @@ class SetupApp(tk.Tk):
             if not svc:
                 return
             try:
-                status = _SERVICE_STATUS()
+                status = _get_svc_status_cls()()
                 # Pass status as c_void_p — ControlService requires non-NULL lpServiceStatus.
                 advapi32.ControlService(
                     svc,
@@ -435,15 +462,14 @@ class SetupApp(tk.Tk):
         while True:
             if self._stopping or gen != self._server_gen or self._uvicorn_error is not None:
                 return
-            if _TUNNEL_URL_FILE.exists():
-                try:
-                    url = _TUNNEL_URL_FILE.read_text(encoding="utf-8").strip()
-                except Exception:
-                    url = ""
-                if url:
-                    self._append_log(f"Tunnel URL obtained: {url}")
-                    self.after(0, lambda value=url: self._on_tunnel_ready(value))
-                    return
+            try:
+                url = _TUNNEL_URL_FILE.read_text(encoding="utf-8").strip()
+            except Exception:
+                url = ""
+            if url:
+                self._append_log(f"Tunnel URL obtained: {url}")
+                self.after(0, lambda value=url: self._on_tunnel_ready(value))
+                return
             time.sleep(_POLL_INTERVAL_S)
 
     def _on_tunnel_ready(self, url: str) -> None:
@@ -519,9 +545,7 @@ class SetupApp(tk.Tk):
     def _ensure_standard_streams(self) -> None:
         for name in ("stdout", "stderr"):
             if getattr(sys, name) is None:
-                stream = io.StringIO()
-                setattr(sys, name, stream)
-                self._hidden_streams.append(stream)
+                setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
 
     def _local_server_ready(self) -> bool:
         return (

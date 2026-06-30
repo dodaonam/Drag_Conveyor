@@ -23,10 +23,14 @@ Name: "{autodesktop}\Drag Conveyor"; Filename: "{app}\DragConveyor.exe"
 
 [Run]
 ; ── Step 1: Register Windows Service (needs admin → Verb: runas triggers UAC) ─────────────
-; sc.exe syntax: binPath= "path" (space after =, path quoted if it contains spaces)
-; Inno Setup quoting: "" inside Parameters becomes " in the actual argument.
-Filename: "{sys}\sc.exe"; \
-  Parameters: "create DragConveyorTunnel binPath= ""{app}\bin\tunnel_service\tunnel_service.exe"" start= demand DisplayName= ""Drag Conveyor Tunnel"""; \
+; On reinstall sc create returns 1073 (already exists) — so we stop and delete any
+; existing service first. sc stop / sc delete return non-zero on first install (service
+; not yet registered), but cmd.exe with & continues regardless.
+; All three commands share one elevated session (single UAC prompt).
+; timeout /t 3 gives the SCM time to fully remove the old service before recreating.
+; Inno Setup quoting: "" inside Parameters becomes " in the actual argument to cmd.exe.
+Filename: "{sys}\cmd.exe"; \
+  Parameters: "/c sc stop DragConveyorTunnel & sc delete DragConveyorTunnel & timeout /t 3 /nobreak > nul & sc create DragConveyorTunnel binPath= ""{app}\bin\tunnel_service\tunnel_service.exe"" start= demand DisplayName= ""Drag Conveyor Tunnel"""; \
   Verb: "runas"; \
   Flags: runhidden waituntilterminated; \
   StatusMsg: "Đang đăng ký Windows Service (cần quyền admin)..."
