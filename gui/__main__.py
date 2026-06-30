@@ -3,7 +3,7 @@
 # nuitka-project: --output-filename=DragConveyor
 #
 # ── Windows PE metadata ──────────────────────────────────────────────────────
-# nuitka-project: --windows-disable-console
+# nuitka-project: --windows-console-mode=disable
 # nuitka-project: --windows-icon-from-ico=gui/icon.ico
 # nuitka-project: --windows-company-name=Drag Conveyor
 # nuitka-project: --windows-file-description=Drag Conveyor Inspection System
@@ -30,7 +30,6 @@
 # nuitka-project: --include-package=pdfkit
 # nuitka-project: --include-package=numpy
 # nuitka-project: --include-package=onnxruntime
-# nuitka-project: --include-package=PIL
 # nuitka-project: --include-package=anyio
 # nuitka-project: --include-package=h11
 # nuitka-project: --include-package=httptools
