@@ -27,6 +27,7 @@ jobs:
         shell: pwsh
         run: |
           uv run python -m nuitka `
+            --assume-yes-for-downloads `
             --mode=standalone `
             --windows-service `
             --include-module=servicemanager `
@@ -40,7 +41,7 @@ jobs:
 
       # ── Build DragConveyor with Nuitka ───────────────────────────────────────
       - name: Build DragConveyor with Nuitka
-        run: uv run python -m nuitka gui/__main__.py
+        run: uv run python -m nuitka --assume-yes-for-downloads gui/__main__.py
 
       # Nuitka names the output directory after the script stem (gui/__main__.py →
       # dist\__main__.dist). --output-filename only renames the exe inside.
