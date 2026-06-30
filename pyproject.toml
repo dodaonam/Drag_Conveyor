@@ -22,6 +22,14 @@ dependencies = [
 gui = [
     "qrcode>=8.2",
 ]
+build = [
+    "nuitka>=2.4",
+    "ordered-set>=4.1",
+]
+tunnel-service = [
+    "pywin32",
+    "Nuitka-winsvc",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

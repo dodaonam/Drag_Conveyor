@@ -14,50 +14,85 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v3
 
+      # ── Build tunnel_service (Nuitka-winsvc standalone) ──────────────────────
+      - name: Build tunnel_service
+        shell: pwsh
+        run: |
+          uv pip install pywin32 Nuitka-winsvc
+          uv run python -m nuitka `
+            --mode=standalone `
+            --windows-service `
+            --include-module=servicemanager `
+            --include-module=win32service `
+            --include-module=win32serviceutil `
+            --include-module=win32event `
+            --include-package=win32timezone `
+            --output-filename=tunnel_service `
+            --output-dir=dist/tunnel_service_build `
+            tunnel_service/service.py
+
+      # ── Install main dependencies ────────────────────────────────────────────
       - name: Install dependencies
         run: |
           uv sync
-          uv pip install pyinstaller
+          uv pip install "nuitka>=2.4" ordered-set
 
-      - name: Rebuild PyInstaller bootloader from source
+      # ── Build DragConveyor with Nuitka ───────────────────────────────────────
+      - name: Build DragConveyor with Nuitka
+        run: uv run python -m nuitka gui/__main__.py
+
+      # Nuitka names the output directory after the script stem (gui/__main__.py →
+      # dist\__main__.dist). --output-filename only renames the exe inside.
+      - name: Rename Nuitka output directory
+        shell: pwsh
+        run: Rename-Item dist\__main__.dist dist\DragConveyor
+
+      # ── Security check: secrets must NOT be bundled ───────────────────────────
+      - name: Verify secrets not bundled
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $piVersion = uv run python -c "import PyInstaller; print(PyInstaller.__version__)"
-          $bootDir   = uv run python -c "import PyInstaller, os; print(os.path.join(os.path.dirname(PyInstaller.__file__), 'bootloader', 'Windows-64bit-intel'))"
-          Write-Host "PyInstaller $piVersion - bootloader dir: $bootDir"
-          git clone --depth 1 --branch "v$piVersion" https://github.com/pyinstaller/pyinstaller.git C:\pi_src
-          Set-Location C:\pi_src\bootloader
-          uv run python waf all --target-arch=64bit
-          Set-Location $env:GITHUB_WORKSPACE
-          $run  = "C:\pi_src\bootloader\build\release\run.exe"
-          $runw = "C:\pi_src\bootloader\build\releasew\runw.exe"
-          if (-not (Test-Path $runw)) { throw "runw.exe not found at $runw" }
-          Copy-Item $run  "$bootDir\run.exe"  -Force
-          Copy-Item $runw "$bootDir\runw.exe" -Force
-          Remove-Item C:\pi_src -Recurse -Force
+          if (Test-Path "dist\DragConveyor\server\.env") {
+            Write-Error "SECURITY: server\.env was bundled into dist!"
+            exit 1
+          }
+          if (Test-Path "dist\DragConveyor\config\app_settings.json") {
+            Write-Error "SECURITY: config\app_settings.json was bundled into dist!"
+            exit 1
+          }
+          Write-Host "Security check passed: no secrets in dist."
 
-      - name: Build with PyInstaller
-        run: uv run pyinstaller DragConveyor.spec --clean
-
+      # ── Copy vendor binaries ─────────────────────────────────────────────────
       - name: Copy vendor binaries
-        shell: powershell
+        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist\DragConveyor\bin | Out-Null
+          New-Item -ItemType Directory -Force -Path dist\DragConveyor\bin\tunnel_service | Out-Null
           Copy-Item vendor\cloudflared.exe  dist\DragConveyor\bin\
           Copy-Item vendor\wkhtmltopdf.exe  dist\DragConveyor\bin\
+          Copy-Item "dist\tunnel_service_build\service.dist\*" `
+            "dist\DragConveyor\bin\tunnel_service\" -Recurse -Force
 
+      # ── Build installer ───────────────────────────────────────────────────────
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
+
+      # ── Package zip ───────────────────────────────────────────────────────────
       - name: Package zip
-        shell: powershell
-        run: Compress-Archive -Path dist\DragConveyor -DestinationPath DragConveyor_v${{ github.run_number }}.zip -Force
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist\DragConveyor `
+            -DestinationPath DragConveyor_v${{ github.run_number }}.zip -Force
 
+      # ── Upload artifacts to GitHub Releases ──────────────────────────────────
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: "Build v${{ github.run_number }}"
           body: "Commit: ${{ github.sha }}"
-          files: DragConveyor_v${{ github.run_number }}.zip
+          files: |
+            DragConveyor_Setup.exe
+            DragConveyor_v${{ github.run_number }}.zip

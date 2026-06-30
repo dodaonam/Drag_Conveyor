@@ -3,8 +3,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import re
-import subprocess
 import sys
 import threading
 import time
@@ -12,7 +10,6 @@ import traceback
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox
-from urllib import request
 
 import qrcode
 
@@ -27,10 +24,10 @@ _ROOT = _get_root()
 CONFIG_PATH = _ROOT / "config" / "app_settings.json"
 DEFAULT_REPORTS_DIR = str((_ROOT / "runtime" / "reports").resolve())
 _MAX_LOG_FILES = 10
-_TUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
-_LOCAL_SERVER_URL = "http://127.0.0.1:8001/"
 _POLL_INTERVAL_S = 3.0
 _RESTART_DELAY_S = 1.0
+_SERVICE_NAME    = "DragConveyorTunnel"
+_TUNNEL_URL_FILE = _ROOT / "runtime" / "tunnel_url.txt"
 
 # (label, config_key, env_var, is_secret, required)
 FIELDS: list[tuple[str, str, str, bool, bool]] = [
@@ -44,12 +41,38 @@ FIELDS: list[tuple[str, str, str, bool, bool]] = [
 ]
 
 
+def _advapi32():
+    """Return (advapi32 WinDLL, ctypes module) with restype/argtypes declared.
+
+    SC_HANDLE is pointer-sized (8 bytes on 64-bit). Without HANDLE restype
+    ctypes defaults to c_int (4 bytes) and truncates handles on 64-bit Windows.
+    """
+    import ctypes
+    import ctypes.wintypes
+    a32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    SC_HANDLE = ctypes.wintypes.HANDLE
+    a32.OpenSCManagerW.restype    = SC_HANDLE
+    a32.OpenSCManagerW.argtypes   = [
+        ctypes.wintypes.LPCWSTR, ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD,
+    ]
+    a32.OpenServiceW.restype      = SC_HANDLE
+    a32.OpenServiceW.argtypes     = [
+        SC_HANDLE, ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD,
+    ]
+    a32.StartServiceW.restype     = ctypes.wintypes.BOOL
+    a32.StartServiceW.argtypes    = [SC_HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
+    a32.ControlService.restype    = ctypes.wintypes.BOOL
+    a32.ControlService.argtypes   = [SC_HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
+    a32.CloseServiceHandle.restype  = ctypes.wintypes.BOOL
+    a32.CloseServiceHandle.argtypes = [SC_HANDLE]
+    return a32, ctypes
+
+
 class SetupApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Thiết lập Drag Conveyor")
         self.resizable(False, False)
-        self._tunnel_proc: subprocess.Popen | None = None
         self._uvicorn_server = None
         self._uvicorn_error: str | None = None
         self._stopping: bool = False
@@ -242,7 +265,9 @@ class SetupApp(tk.Tk):
 
         self._append_log("User pressed Start — launching server")
         threading.Thread(target=self._run_uvicorn, daemon=True).start()
-        threading.Thread(target=lambda: self._start_tunnel_when_server_ready(my_gen), daemon=True).start()
+        threading.Thread(
+            target=lambda: self._start_tunnel_when_server_ready(my_gen), daemon=True
+        ).start()
 
     def _restart(self) -> None:
         self._append_log("User requested restart")
@@ -265,7 +290,11 @@ class SetupApp(tk.Tk):
 
             self._ensure_standard_streams()
             if getattr(sys, "frozen", False):
-                server_dir = str(Path(sys._MEIPASS) / "server")
+                # PyInstaller sets _MEIPASS; Nuitka does not — fall back to exe dir.
+                _meipass = getattr(sys, "_MEIPASS", None)
+                server_dir = str(
+                    (Path(_meipass) if _meipass else Path(sys.executable).parent) / "server"
+                )
             else:
                 server_dir = str(_ROOT / "server")
             if server_dir not in sys.path:
@@ -296,104 +325,126 @@ class SetupApp(tk.Tk):
     def _start_tunnel_when_server_ready(self, gen: int) -> None:
         self.after(0, lambda: self._set_status_detail("Đang kiểm tra máy chủ cục bộ..."))
         _t0 = time.monotonic()
+
+        # Remove stale tunnel_url.txt from a previous session so we don't read an old URL.
+        try:
+            _TUNNEL_URL_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
+
         if not self._wait_until_ready(self._local_server_ready):
+            return
+
+        # Recheck gen: a restart can happen while we were waiting for the server.
+        if self._stopping or gen != self._server_gen:
             return
 
         self._append_log(f"Local server ready after {time.monotonic() - _t0:.1f}s")
         self.after(0, lambda: self._set_status("starting_tunnel"))
-        self.after(0, lambda: self._set_status_detail("Máy chủ cục bộ đã sẵn sàng. Đang khởi động tunnel..."))
+        self.after(0, lambda: self._set_status_detail(
+            "Máy chủ cục bộ đã sẵn sàng. Đang khởi động tunnel..."
+        ))
 
         try:
-            cf_path = self._get_cloudflared()
-            self._kill_existing_cloudflared()
-            self._append_log(f"Starting cloudflared: {cf_path}")
-            self._tunnel_proc = subprocess.Popen(
-                [cf_path, "tunnel", "--url", "http://127.0.0.1:8001"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            try:
-                (_ROOT / "runtime" / "cloudflared.pid").write_text(str(self._tunnel_proc.pid))
-            except Exception:
-                pass
+            self._start_tunnel_service()
         except Exception:
             self._fail_startup(
-                "Không thể khởi động cloudflared. Vui lòng khởi động lại máy chủ.",
+                "Không thể khởi động DragConveyorTunnel service. "
+                "Kiểm tra service đã được cài đặt chưa (chạy DragConveyor_Setup.exe).",
                 include_traceback=True,
             )
             return
 
-        threading.Thread(target=lambda: self._watch_tunnel(gen), daemon=True).start()
+        self._wait_for_tunnel_url(gen)
 
-    def _get_cloudflared(self) -> str:
-        cf = _ROOT / "bin" / "cloudflared.exe"
-        return str(cf) if cf.exists() else "cloudflared"
+    def _start_tunnel_service(self) -> None:
+        if sys.platform != "win32":
+            return
 
-    def _kill_existing_cloudflared(self) -> None:
-        """Kill only the cloudflared PID we tracked in the previous session, not all instances."""
-        pid_file = _ROOT / "runtime" / "cloudflared.pid"
-        if not pid_file.exists():
+        SC_MANAGER_CONNECT            = 0x0001
+        SERVICE_START                 = 0x0010
+        ERROR_SERVICE_ALREADY_RUNNING = 1056
+        ERROR_SERVICE_CONTROL_IN_PROGRESS = 1061
+
+        advapi32, ctypes = _advapi32()
+        manager = advapi32.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
+        if not manager:
+            raise RuntimeError("OpenSCManagerW failed — service chưa được cài đặt?")
+        try:
+            svc = advapi32.OpenServiceW(manager, _SERVICE_NAME, SERVICE_START)
+            if not svc:
+                raise RuntimeError(
+                    f"Không tìm thấy service '{_SERVICE_NAME}'. "
+                    "Chạy DragConveyor_Setup.exe để cài đặt."
+                )
+            try:
+                if not advapi32.StartServiceW(svc, 0, None):
+                    err = ctypes.get_last_error()
+                    if err not in (ERROR_SERVICE_ALREADY_RUNNING,
+                                   ERROR_SERVICE_CONTROL_IN_PROGRESS):
+                        raise RuntimeError(f"StartServiceW thất bại: Windows error {err}")
+            finally:
+                advapi32.CloseServiceHandle(svc)
+        finally:
+            advapi32.CloseServiceHandle(manager)
+
+    def _stop_tunnel_service(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        import ctypes as _ct
+
+        class _SERVICE_STATUS(_ct.Structure):
+            _fields_ = [
+                ("dwServiceType",             _ct.c_ulong),
+                ("dwCurrentState",            _ct.c_ulong),
+                ("dwControlsAccepted",        _ct.c_ulong),
+                ("dwWin32ExitCode",           _ct.c_ulong),
+                ("dwServiceSpecificExitCode", _ct.c_ulong),
+                ("dwCheckPoint",              _ct.c_ulong),
+                ("dwWaitHint",                _ct.c_ulong),
+            ]
+
+        SC_MANAGER_CONNECT   = 0x0001
+        SERVICE_STOP         = 0x0020
+        SERVICE_CONTROL_STOP = 0x00000001
+
+        advapi32, ctypes = _advapi32()
+        manager = advapi32.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
+        if not manager:
             return
         try:
-            pid = int(pid_file.read_text().strip())
-            import platform
-            if platform.system() == "Windows":
-                subprocess.run(
-                    ["taskkill", "/pid", str(pid), "/f"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            svc = advapi32.OpenServiceW(manager, _SERVICE_NAME, SERVICE_STOP)
+            if not svc:
+                return
+            try:
+                status = _SERVICE_STATUS()
+                # Pass status as c_void_p — ControlService requires non-NULL lpServiceStatus.
+                advapi32.ControlService(
+                    svc,
+                    SERVICE_CONTROL_STOP,
+                    ctypes.cast(ctypes.byref(status), ctypes.c_void_p),
                 )
-            else:
-                import signal
-                os.kill(pid, signal.SIGTERM)
-        except Exception:
-            pass
+                # Return value not checked: 1062 (NOT_ACTIVE) = already stopped, which is OK.
+            finally:
+                advapi32.CloseServiceHandle(svc)
         finally:
-            pid_file.unlink(missing_ok=True)
+            advapi32.CloseServiceHandle(manager)
 
-    def _watch_tunnel(self, gen: int) -> None:
-        if self._tunnel_proc is None or self._tunnel_proc.stdout is None:
-            self._fail_startup(
-                "Không đọc được trạng thái cloudflared. Vui lòng khởi động lại máy chủ."
-            )
-            return
-
-        last_line = ""
-        url_found = False
-        for line in self._tunnel_proc.stdout:
-            last_line = line.strip()
-            if last_line:
-                self._append_log(f"[cloudflared] {last_line}")
-            if not url_found:
-                match = _TUNNEL_URL_RE.search(line)
-                if match:
-                    url_found = True
-                    url = match.group(0)
+    def _wait_for_tunnel_url(self, gen: int) -> None:
+        while True:
+            if self._stopping or gen != self._server_gen or self._uvicorn_error is not None:
+                return
+            if _TUNNEL_URL_FILE.exists():
+                try:
+                    url = _TUNNEL_URL_FILE.read_text(encoding="utf-8").strip()
+                except Exception:
+                    url = ""
+                if url:
                     self._append_log(f"Tunnel URL obtained: {url}")
                     self.after(0, lambda value=url: self._on_tunnel_ready(value))
-            # keep draining stdout until cloudflared exits
-
-        exit_code = self._tunnel_proc.poll()
-        if url_found:
-            if not self._stopping and gen == self._server_gen:
-                self._fail_startup(
-                    f"cloudflared đã thoát bất ngờ (code={exit_code}). "
-                    "Tunnel không còn hoạt động. Vui lòng khởi động lại máy chủ."
-                )
-            return
-        if self._uvicorn_error is not None or self._stopping or gen != self._server_gen:
-            return
-
-        detail = "Không lấy được đường dẫn public từ cloudflared."
-        if exit_code is not None:
-            detail = f"{detail} Mã thoát: {exit_code}."
-        if last_line:
-            detail = f"{detail} Dòng cuối: {last_line}"
-        self._fail_startup(f"{detail} Vui lòng khởi động lại máy chủ.")
+                    return
+            time.sleep(_POLL_INTERVAL_S)
 
     def _on_tunnel_ready(self, url: str) -> None:
         self._append_log(f"System ready — serving at {url}")
@@ -408,7 +459,10 @@ class SetupApp(tk.Tk):
 
     def _do_update_cors(self, url: str) -> None:
         if getattr(sys, "frozen", False):
-            server_dir = str(Path(sys._MEIPASS) / "server")
+            _meipass = getattr(sys, "_MEIPASS", None)
+            server_dir = str(
+                (Path(_meipass) if _meipass else Path(sys.executable).parent) / "server"
+            )
         else:
             server_dir = str(_ROOT / "server")
         if server_dir not in sys.path:
@@ -432,17 +486,11 @@ class SetupApp(tk.Tk):
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None
-        if self._tunnel_proc is not None:
-            try:
-                self._tunnel_proc.terminate()
-                self._tunnel_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._tunnel_proc.kill()
-                self._tunnel_proc.wait()
-            except Exception:
-                pass
-            self._tunnel_proc = None
-            (_ROOT / "runtime" / "cloudflared.pid").unlink(missing_ok=True)
+        self._stop_tunnel_service()
+        try:
+            _TUNNEL_URL_FILE.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def _show_qr(self, url: str) -> None:
         qr = qrcode.QRCode(border=2)
@@ -481,18 +529,11 @@ class SetupApp(tk.Tk):
             and getattr(self._uvicorn_server, "started", False)
         )
 
-    def _http_ok(self, url: str, *, log_errors: bool = False) -> bool:
-        try:
-            with request.urlopen(url, timeout=1.5) as response:
-                return 200 <= response.status < 400
-        except Exception as exc:
-            if log_errors:
-                self._append_log(f"Local server check failed: {type(exc).__name__}: {exc}")
-            return False
-
     def _wait_until_ready(self, probe) -> bool:
         while True:
-            if self._uvicorn_error is not None:
+            # Check _stopping first: _stop() sets _uvicorn_error=None after stopping,
+            # so checking only _uvicorn_error would loop forever after user Stop.
+            if self._stopping or self._uvicorn_error is not None:
                 return False
             if probe():
                 return True
@@ -539,7 +580,7 @@ class SetupApp(tk.Tk):
                 self._qr_canvas.grid_remove()
             case "starting_tunnel":
                 self._status_var.set("Máy chủ cục bộ đã sẵn sàng. Đang tạo đường dẫn public...")
-                self._detail_var.set("Đang chờ cloudflared cấp URL tunnel...")
+                self._detail_var.set("Đang chờ DragConveyorTunnel service cấp URL tunnel...")
                 self._status_lbl.config(fg="#888888")
                 self._qr_canvas.grid_remove()
             case "restarting":
@@ -560,7 +601,9 @@ class SetupApp(tk.Tk):
                     detail
                     or f"Khởi động thất bại. Xem log tại {self._log_path} và khởi động lại máy chủ."
                 )
-                self._detail_var.set("Có lỗi trong quá trình kiểm tra sẵn sàng. Vui lòng bấm Khởi động lại.")
+                self._detail_var.set(
+                    "Có lỗi trong quá trình kiểm tra sẵn sàng. Vui lòng bấm Khởi động lại."
+                )
                 self._status_lbl.config(fg="#cc0000")
                 self._start_btn.config(state="normal")
                 self._restart_btn.config(state="normal")
