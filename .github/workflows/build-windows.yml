@@ -36,11 +36,13 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync
-          uv pip install ordered-set pywin32 Nuitka-winsvc
+          uv pip install ordered-set pywin32
 
-      # ── Build tunnel_service (Nuitka-winsvc standalone) ──────────────────────
+      # ── Build tunnel_service (Nuitka standalone) ──────────────────────────────
       # --lto=no: tắt Link Time Optimization (/LTCG) — giảm thời gian link đáng kể
       # --lto valid values: "yes", "no", "auto" (default auto → bật với MSVC)
+      # NOTE: --windows-service (nuitka-winsvc) removed — pywin32's HandleCommandLine
+      # already calls StartServiceCtrlDispatcher; the extra layer caused error 1053.
       - name: Build tunnel_service
         shell: pwsh
         run: |
@@ -48,7 +50,6 @@ jobs:
             --assume-yes-for-downloads `
             --lto=no `
             --mode=standalone `
-            --windows-service `
             --include-module=servicemanager `
             --include-module=win32service `
             --include-module=win32serviceutil `

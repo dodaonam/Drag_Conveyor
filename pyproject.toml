@@ -23,12 +23,10 @@ gui = [
     "qrcode>=8.2",
 ]
 build = [
-    "Nuitka-winsvc",
     "ordered-set>=4.1",
 ]
 tunnel-service = [
     "pywin32",
-    "Nuitka-winsvc",
 ]
 
 [build-system]
