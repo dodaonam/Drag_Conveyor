@@ -35,6 +35,7 @@ class TunnelService(win32serviceutil.ServiceFramework):
                     pass
 
     def SvcDoRun(self):
+        import servicemanager
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
         # Standalone build layout:
         #   bin\tunnel_service\tunnel_service.exe  <- sys.executable
@@ -48,17 +49,25 @@ class TunnelService(win32serviceutil.ServiceFramework):
         # Create runtime/ if it doesn't exist yet (service may start before the GUI).
         tunnel_url_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cf_path = str(bin_dir / "cloudflared.exe")
+        cf_path = bin_dir / "cloudflared.exe"
+        servicemanager.LogInfoMsg(
+            f"DragConveyorTunnel starting: exe={sys.executable} "
+            f"cf_path={cf_path} exists={cf_path.exists()}"
+        )
+
         try:
             self._proc = subprocess.Popen(
-                [cf_path, "tunnel", "--url", "http://127.0.0.1:8001"],
+                [str(cf_path), "tunnel", "--url", "http://127.0.0.1:8001"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 # No CREATE_NO_WINDOW needed — services run non-interactive, no console window.
             )
-        except Exception:
+        except Exception as exc:
+            servicemanager.LogErrorMsg(
+                f"DragConveyorTunnel: failed to start cloudflared: {exc}"
+            )
             self.ReportServiceStatus(win32service.SERVICE_STOPPED)
             return
 
