@@ -118,7 +118,7 @@ jobs:
           tag_name: v${{ github.run_number }}
           name: "Build v${{ github.run_number }}"
           body: "Commit: ${{ github.sha }}"
-          overwrite: true
+          overwrite_files: true
           files: |
             DragConveyor_Setup.exe
             DragConveyor_v${{ github.run_number }}.zip
