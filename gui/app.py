@@ -426,8 +426,14 @@ class SetupApp(tk.Tk):
         try:
             svc = advapi32.OpenServiceW(manager, _SERVICE_NAME, SERVICE_START)
             if not svc:
+                err = ctypes.get_last_error()
+                if err == 5:  # ERROR_ACCESS_DENIED
+                    raise RuntimeError(
+                        f"Quyền truy cập bị từ chối khi mở service '{_SERVICE_NAME}' (error 5). "
+                        "Gỡ cài đặt và cài lại bằng DragConveyor_Setup.exe."
+                    )
                 raise RuntimeError(
-                    f"Không tìm thấy service '{_SERVICE_NAME}'. "
+                    f"Không tìm thấy service '{_SERVICE_NAME}' (error {err}). "
                     "Chạy DragConveyor_Setup.exe để cài đặt."
                 )
             try:

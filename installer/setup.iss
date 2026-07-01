@@ -43,9 +43,9 @@ Filename: "{sys}\cmd.exe"; \
 ; SDDL breakdown:
 ;   (A;;CCLCSWRPWPDTLOCRRC;;;SY)            = SYSTEM: full control
 ;   (A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)    = Administrators: full control
-;   (A;;CCLCSWLOCRRC;;;IU)                  = InteractiveUsers: query+start+stop+status
+;   (A;;CCLCSWRPWPLOCRRC;;;IU)              = InteractiveUsers: query+start+stop+status
 Filename: "{sys}\sc.exe"; \
-  Parameters: "sdset DragConveyorTunnel D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)"; \
+  Parameters: "sdset DragConveyorTunnel D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPLOCRRC;;;IU)"; \
   Verb: "runas"; \
   Flags: shellexec runhidden waituntilterminated; \
   StatusMsg: "Đang cấp quyền cho service..."
