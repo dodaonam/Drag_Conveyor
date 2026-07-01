@@ -14,7 +14,23 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+
+      # ── setup-uv v8 với built-in package cache ───────────────────────────────
+      - uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      # ── Cache Nuitka C compilation (clcache — built-in MSVC cache) ───────────
+      # Confirmed default path: %LOCALAPPDATA%\Nuitka\Nuitka\Cache
+      # (appdirs appauthor=None → fallback = appname → "Nuitka\Nuitka")
+      # restore-keys allows partial hit từ commit trước → tái dùng compiled .obj
+      - name: Cache Nuitka compilation
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Nuitka\Nuitka\Cache
+          key: nuitka-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            nuitka-${{ runner.os }}-${{ runner.arch }}-
 
       # ── Install dependencies (creates venv first, then add build/service extras) ─
       - name: Install dependencies
@@ -23,11 +39,14 @@ jobs:
           uv pip install ordered-set pywin32 Nuitka-winsvc
 
       # ── Build tunnel_service (Nuitka-winsvc standalone) ──────────────────────
+      # --lto=no: tắt Link Time Optimization (/LTCG) — giảm thời gian link đáng kể
+      # --lto valid values: "yes", "no", "auto" (default auto → bật với MSVC)
       - name: Build tunnel_service
         shell: pwsh
         run: |
           uv run python -m nuitka `
             --assume-yes-for-downloads `
+            --lto=no `
             --mode=standalone `
             --windows-service `
             --include-module=servicemanager `
@@ -41,7 +60,7 @@ jobs:
 
       # ── Build DragConveyor with Nuitka ───────────────────────────────────────
       - name: Build DragConveyor with Nuitka
-        run: uv run python -m nuitka --assume-yes-for-downloads gui/__main__.py
+        run: uv run python -m nuitka --assume-yes-for-downloads --lto=no gui/__main__.py
 
       # Nuitka 4.x may name the .dist dir after --output-filename (DragConveyor.dist)
       # or after the script stem (__main__.dist). Find whichever exists and rename it.
@@ -92,12 +111,14 @@ jobs:
             -DestinationPath DragConveyor_v${{ github.run_number }}.zip -Force
 
       # ── Upload artifacts to GitHub Releases ──────────────────────────────────
+      # overwrite: true — tránh lỗi HTTP 422 khi re-run cùng tag
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: "Build v${{ github.run_number }}"
           body: "Commit: ${{ github.sha }}"
+          overwrite: true
           files: |
             DragConveyor_Setup.exe
             DragConveyor_v${{ github.run_number }}.zip
