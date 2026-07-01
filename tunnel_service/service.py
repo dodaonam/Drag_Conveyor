@@ -29,11 +29,16 @@ class TunnelService(win32serviceutil.ServiceFramework):
             try:
                 self._proc.terminate()
                 self._proc.wait(timeout=5)
-            except Exception:
+            except Exception as exc:
+                servicemanager.LogErrorMsg(
+                    f"[DragConveyorTunnel] terminate failed: {exc} — attempting kill"
+                )
                 try:
                     self._proc.kill()
-                except Exception:
-                    pass
+                except Exception as exc2:
+                    servicemanager.LogErrorMsg(
+                        f"[DragConveyorTunnel] kill failed: {exc2}"
+                    )
 
     def SvcDoRun(self):
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
@@ -46,7 +51,15 @@ class TunnelService(win32serviceutil.ServiceFramework):
         root_dir = bin_dir.parent                # ...\DragConveyor\
 
         tunnel_url_path = root_dir / "runtime" / "tunnel_url.txt"
-        tunnel_url_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            tunnel_url_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            servicemanager.LogErrorMsg(
+                f"[DragConveyorTunnel] ABORT: cannot create runtime dir "
+                f"{tunnel_url_path.parent}: {exc}"
+            )
+            self.ReportServiceStatus(win32service.SERVICE_STOPPED)
+            return
 
         cf_path = bin_dir / "cloudflared.exe"
         servicemanager.LogInfoMsg(
@@ -126,8 +139,10 @@ class TunnelService(win32serviceutil.ServiceFramework):
 
         try:
             tunnel_url_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            servicemanager.LogErrorMsg(
+                f"[DragConveyorTunnel] failed to remove tunnel_url.txt: {exc}"
+            )
         self.ReportServiceStatus(win32service.SERVICE_STOPPED)
 
 
