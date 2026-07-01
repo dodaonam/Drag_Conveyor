@@ -13,9 +13,21 @@ from tkinter import filedialog, messagebox
 import qrcode
 
 
+try:
+    # Nuitka compiled modules expose __compiled__ = True as a module-level global.
+    # Nuitka-winsvc (the fork used here) does not set sys.frozen, so we must
+    # check __compiled__ to detect a Nuitka build.
+    _NUITKA_COMPILED: bool = bool(__compiled__)  # type: ignore[name-defined]
+except NameError:
+    _NUITKA_COMPILED = False
+
+
 def _get_root() -> Path:
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) or _NUITKA_COMPILED:
+        # PyInstaller sets sys.frozen; Nuitka sets __compiled__.
+        # In both cases sys.executable points to the compiled exe.
         return Path(sys.executable).parent
+    # Dev mode: __file__ = gui/app.py → parent.parent = project root.
     return Path(__file__).parent.parent
 
 
@@ -23,7 +35,8 @@ _ROOT = _get_root()
 CONFIG_PATH = _ROOT / "config" / "app_settings.json"
 DEFAULT_REPORTS_DIR = str((_ROOT / "runtime" / "reports").resolve())
 _MAX_LOG_FILES = 10
-_POLL_INTERVAL_S = 3.0
+_POLL_INTERVAL_S = 1.0
+_SERVER_READY_TIMEOUT_S = 30
 _RESTART_DELAY_S = 1.0
 _SERVICE_NAME    = "DragConveyorTunnel"
 _TUNNEL_URL_FILE = _ROOT / "runtime" / "tunnel_url.txt"
@@ -554,6 +567,7 @@ class SetupApp(tk.Tk):
         )
 
     def _wait_until_ready(self, probe) -> bool:
+        deadline = time.monotonic() + _SERVER_READY_TIMEOUT_S
         while True:
             # Check _stopping first: _stop() sets _uvicorn_error=None after stopping,
             # so checking only _uvicorn_error would loop forever after user Stop.
@@ -561,6 +575,12 @@ class SetupApp(tk.Tk):
                 return False
             if probe():
                 return True
+            if time.monotonic() >= deadline:
+                self._fail_startup(
+                    f"Máy chủ cục bộ không phản hồi sau {_SERVER_READY_TIMEOUT_S} giây. "
+                    "Vui lòng bấm Khởi động lại."
+                )
+                return False
             time.sleep(_POLL_INTERVAL_S)
 
     def _append_log(self, message: str) -> None:
@@ -587,7 +607,10 @@ class SetupApp(tk.Tk):
         log_message = detail
         if include_traceback:
             log_message = f"{detail}\n{traceback.format_exc()}"
-        self._append_log(log_message)
+        try:
+            self._append_log(log_message)
+        except Exception:
+            pass
 
         def apply_failure() -> None:
             self._stop_background_processes()
@@ -635,6 +658,16 @@ class SetupApp(tk.Tk):
                 self._qr_canvas.grid_remove()
 
     def _on_close(self) -> None:
-        self._append_log("GUI closed by user")
-        self._stop()
+        try:
+            self._append_log("GUI closed by user")
+        except Exception:
+            pass
+        try:
+            self._stop()
+        except Exception:
+            pass
         self.destroy()
+        # Force-exit: asyncio/uvicorn threads inside the Nuitka binary do not
+        # always release cleanly, leaving the process alive after the window
+        # closes. os._exit() bypasses Python cleanup and terminates immediately.
+        os._exit(0)
