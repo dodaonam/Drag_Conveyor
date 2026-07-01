@@ -8,6 +8,7 @@ AppPublisher=Drag Conveyor
 DefaultDirName={localappdata}\DragConveyor
 PrivilegesRequired=lowest
 DisableDirPage=yes
+OutputDir=..
 OutputBaseFilename=DragConveyor_Setup
 Compression=lzma
 SolidCompression=yes
