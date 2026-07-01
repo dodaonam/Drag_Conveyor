@@ -35,6 +35,7 @@ class TunnelService(win32serviceutil.ServiceFramework):
                     pass
 
     def SvcDoRun(self):
+        self.ReportServiceStatus(win32service.SERVICE_RUNNING)
         # Standalone build layout:
         #   bin\tunnel_service\tunnel_service.exe  <- sys.executable
         #   bin\cloudflared.exe
