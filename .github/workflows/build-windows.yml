@@ -43,11 +43,16 @@ jobs:
       - name: Build DragConveyor with Nuitka
         run: uv run python -m nuitka --assume-yes-for-downloads gui/__main__.py
 
-      # Nuitka names the output directory after the script stem (gui/__main__.py →
-      # dist\__main__.dist). --output-filename only renames the exe inside.
+      # Nuitka 4.x may name the .dist dir after --output-filename (DragConveyor.dist)
+      # or after the script stem (__main__.dist). Find whichever exists and rename it.
+      # Rename-Item requires a plain name (no path separators) for -NewName.
       - name: Rename Nuitka output directory
         shell: pwsh
-        run: Rename-Item dist\__main__.dist dist\DragConveyor
+        run: |
+          $dist = Get-ChildItem dist -Directory | Where-Object { $_.Name -like "*.dist" } | Select-Object -First 1
+          if (-not $dist) { Write-Error "No .dist directory found in dist\"; exit 1 }
+          Write-Host "Found: $($dist.Name) — renaming to DragConveyor"
+          Rename-Item $dist.FullName DragConveyor
 
       # ── Security check: secrets must NOT be bundled ───────────────────────────
       - name: Verify secrets not bundled
