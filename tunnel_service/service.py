@@ -3,6 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import servicemanager
 import win32event
 import win32service
 import win32serviceutil
@@ -35,7 +36,6 @@ class TunnelService(win32serviceutil.ServiceFramework):
                     pass
 
     def SvcDoRun(self):
-        import servicemanager
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
         # Standalone build layout:
         #   bin\tunnel_service\tunnel_service.exe  <- sys.executable
@@ -46,18 +46,19 @@ class TunnelService(win32serviceutil.ServiceFramework):
         root_dir = bin_dir.parent                # ...\DragConveyor\
 
         tunnel_url_path = root_dir / "runtime" / "tunnel_url.txt"
-        # Create runtime/ if it doesn't exist yet (service may start before the GUI).
         tunnel_url_path.parent.mkdir(parents=True, exist_ok=True)
 
         cf_path = bin_dir / "cloudflared.exe"
         servicemanager.LogInfoMsg(
-            f"DragConveyorTunnel starting: exe={sys.executable} "
-            f"cf_path={cf_path} exists={cf_path.exists()}"
+            f"[DragConveyorTunnel] START "
+            f"exe={sys.executable} | "
+            f"cf_path={cf_path} | "
+            f"cf_exists={cf_path.exists()}"
         )
 
         if not cf_path.exists():
             servicemanager.LogErrorMsg(
-                f"DragConveyorTunnel: cloudflared.exe not found at {cf_path}"
+                f"[DragConveyorTunnel] ABORT: cloudflared.exe not found at {cf_path}"
             )
             self.ReportServiceStatus(win32service.SERVICE_STOPPED)
             return
@@ -69,21 +70,24 @@ class TunnelService(win32serviceutil.ServiceFramework):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                # No CREATE_NO_WINDOW needed — services run non-interactive, no console window.
             )
         except Exception as exc:
             servicemanager.LogErrorMsg(
-                f"DragConveyorTunnel: failed to start cloudflared: {exc}"
+                f"[DragConveyorTunnel] ABORT: Popen failed: {exc}"
             )
             self.ReportServiceStatus(win32service.SERVICE_STOPPED)
             return
 
+        servicemanager.LogInfoMsg(
+            f"[DragConveyorTunnel] cloudflared launched (pid={self._proc.pid})"
+        )
+
+        stopped_by_scm = False
         url_written = False
         output_lines: list[str] = []
         for line in self._proc.stdout:
-            # Non-blocking check for SCM STOP command. Using WaitForSingleObject(timeout=0)
-            # instead of time.sleep so the service responds to STOP immediately.
             if win32event.WaitForSingleObject(self._stop_event, 0) == win32event.WAIT_OBJECT_0:
+                stopped_by_scm = True
                 break
             line_stripped = line.rstrip()
             if len(output_lines) < 20:
@@ -94,19 +98,32 @@ class TunnelService(win32serviceutil.ServiceFramework):
                     url_written = True
                     try:
                         tunnel_url_path.write_text(match.group(0), encoding="utf-8")
-                    except Exception:
-                        pass
-            # Keep draining stdout to prevent cloudflared from blocking on a full pipe.
+                        servicemanager.LogInfoMsg(
+                            f"[DragConveyorTunnel] tunnel URL written: {match.group(0)}"
+                        )
+                    except Exception as exc:
+                        servicemanager.LogErrorMsg(
+                            f"[DragConveyorTunnel] failed to write tunnel_url.txt: {exc}"
+                        )
 
-        exit_code = self._proc.wait()
-        if exit_code != 0 or not url_written:
-            servicemanager.LogErrorMsg(
-                f"DragConveyorTunnel: cloudflared exited (code={exit_code}, "
-                f"url_written={url_written}). "
-                f"Output: {' | '.join(output_lines[-10:])}"
+        if stopped_by_scm:
+            servicemanager.LogInfoMsg("[DragConveyorTunnel] stopped by SCM request")
+        else:
+            exit_code = self._proc.wait()
+            output_summary = (
+                " | ".join(output_lines[-10:]) if output_lines else "(no output)"
             )
+            if exit_code == 0 and url_written:
+                servicemanager.LogInfoMsg(
+                    f"[DragConveyorTunnel] cloudflared exited cleanly (code=0)"
+                )
+            else:
+                servicemanager.LogErrorMsg(
+                    f"[DragConveyorTunnel] cloudflared exited unexpectedly: "
+                    f"code={exit_code} | url_written={url_written} | "
+                    f"output={output_summary}"
+                )
 
-        # Clean up tunnel_url.txt so the GUI knows the tunnel is no longer available.
         try:
             tunnel_url_path.unlink(missing_ok=True)
         except Exception:
