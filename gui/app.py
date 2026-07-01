@@ -80,6 +80,8 @@ def _advapi32():
     ]
     a32.StartServiceW.restype     = ctypes.wintypes.BOOL
     a32.StartServiceW.argtypes    = [SC_HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
+    a32.QueryServiceStatus.restype  = ctypes.wintypes.BOOL
+    a32.QueryServiceStatus.argtypes = [SC_HANDLE, ctypes.c_void_p]
     a32.ControlService.restype    = ctypes.wintypes.BOOL
     a32.ControlService.argtypes   = [SC_HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
     a32.CloseServiceHandle.restype  = ctypes.wintypes.BOOL
@@ -414,17 +416,25 @@ class SetupApp(tk.Tk):
         if sys.platform != "win32":
             return
 
+        import time
+
         SC_MANAGER_CONNECT            = 0x0001
         SERVICE_START                 = 0x0010
-        ERROR_SERVICE_ALREADY_RUNNING = 1056
+        SERVICE_QUERY_STATUS          = 0x0004
+        SERVICE_RUNNING               = 0x00000004
+        SERVICE_STOPPED               = 0x00000001
+        ERROR_SERVICE_ALREADY_RUNNING     = 1056
         ERROR_SERVICE_CONTROL_IN_PROGRESS = 1061
+        ERROR_SERVICE_REQUEST_TIMEOUT     = 1053
 
         advapi32, ctypes = _advapi32()
         manager = advapi32.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
         if not manager:
             raise RuntimeError("OpenSCManagerW failed — service chưa được cài đặt?")
         try:
-            svc = advapi32.OpenServiceW(manager, _SERVICE_NAME, SERVICE_START)
+            svc = advapi32.OpenServiceW(
+                manager, _SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS
+            )
             if not svc:
                 err = ctypes.get_last_error()
                 if err == 5:  # ERROR_ACCESS_DENIED
@@ -437,11 +447,40 @@ class SetupApp(tk.Tk):
                     "Chạy DragConveyor_Setup.exe để cài đặt."
                 )
             try:
-                if not advapi32.StartServiceW(svc, 0, None):
+                started = advapi32.StartServiceW(svc, 0, None)
+                if not started:
                     err = ctypes.get_last_error()
-                    if err not in (ERROR_SERVICE_ALREADY_RUNNING,
-                                   ERROR_SERVICE_CONTROL_IN_PROGRESS):
+                    if err in (ERROR_SERVICE_ALREADY_RUNNING,
+                               ERROR_SERVICE_CONTROL_IN_PROGRESS):
+                        return  # already running — done
+                    if err != ERROR_SERVICE_REQUEST_TIMEOUT:
                         raise RuntimeError(f"StartServiceW thất bại: Windows error {err}")
+                    # 1053: SCM timed out waiting for service to report RUNNING.
+                    # The service process may still be initializing — fall through
+                    # to poll below so we give it extra time.
+
+                # Poll until SERVICE_RUNNING (up to 15 s).
+                # Needed because Nuitka standalone startup can exceed SCM's default
+                # wait hint before the service reports SERVICE_RUNNING.
+                status = _get_svc_status_cls()()
+                deadline = time.monotonic() + 15.0
+                while time.monotonic() < deadline:
+                    if advapi32.QueryServiceStatus(
+                        svc, ctypes.cast(ctypes.byref(status), ctypes.c_void_p)
+                    ):
+                        if status.dwCurrentState == SERVICE_RUNNING:
+                            return
+                        if status.dwCurrentState == SERVICE_STOPPED:
+                            raise RuntimeError(
+                                f"Service '{_SERVICE_NAME}' dừng ngay sau khi khởi động "
+                                f"(Win32ExitCode={status.dwWin32ExitCode}). "
+                                "Kiểm tra Windows Event Viewer > Application để biết chi tiết."
+                            )
+                    time.sleep(0.5)
+                raise RuntimeError(
+                    f"Service '{_SERVICE_NAME}' không đạt trạng thái RUNNING sau 15 giây. "
+                    "Kiểm tra Windows Event Viewer > Application để biết chi tiết."
+                )
             finally:
                 advapi32.CloseServiceHandle(svc)
         finally:
