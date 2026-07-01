@@ -31,6 +31,7 @@
 # nuitka-project: --include-package=numpy
 # nuitka-project: --include-package=onnxruntime
 # nuitka-project: --include-package=anyio
+# nuitka-project: --include-package=sqlite3
 # nuitka-project: --include-package=h11
 # nuitka-project: --include-package=httptools
 # nuitka-project: --include-package=websockets
