@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           uv sync
-          uv pip install ordered-set pywin32
+          uv pip install nuitka ordered-set pywin32
 
       # ── Build tunnel_service (Nuitka standalone) ──────────────────────────────
       # --lto=no: tắt Link Time Optimization (/LTCG) — giảm thời gian link đáng kể
