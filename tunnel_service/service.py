@@ -55,6 +55,13 @@ class TunnelService(win32serviceutil.ServiceFramework):
             f"cf_path={cf_path} exists={cf_path.exists()}"
         )
 
+        if not cf_path.exists():
+            servicemanager.LogErrorMsg(
+                f"DragConveyorTunnel: cloudflared.exe not found at {cf_path}"
+            )
+            self.ReportServiceStatus(win32service.SERVICE_STOPPED)
+            return
+
         try:
             self._proc = subprocess.Popen(
                 [str(cf_path), "tunnel", "--url", "http://127.0.0.1:8001"],
@@ -72,11 +79,15 @@ class TunnelService(win32serviceutil.ServiceFramework):
             return
 
         url_written = False
+        output_lines: list[str] = []
         for line in self._proc.stdout:
             # Non-blocking check for SCM STOP command. Using WaitForSingleObject(timeout=0)
             # instead of time.sleep so the service responds to STOP immediately.
             if win32event.WaitForSingleObject(self._stop_event, 0) == win32event.WAIT_OBJECT_0:
                 break
+            line_stripped = line.rstrip()
+            if len(output_lines) < 20:
+                output_lines.append(line_stripped)
             if not url_written:
                 match = _TUNNEL_URL_RE.search(line)
                 if match:
@@ -86,6 +97,14 @@ class TunnelService(win32serviceutil.ServiceFramework):
                     except Exception:
                         pass
             # Keep draining stdout to prevent cloudflared from blocking on a full pipe.
+
+        exit_code = self._proc.wait()
+        if exit_code != 0 or not url_written:
+            servicemanager.LogErrorMsg(
+                f"DragConveyorTunnel: cloudflared exited (code={exit_code}, "
+                f"url_written={url_written}). "
+                f"Output: {' | '.join(output_lines[-10:])}"
+            )
 
         # Clean up tunnel_url.txt so the GUI knows the tunnel is no longer available.
         try:
