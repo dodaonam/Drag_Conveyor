@@ -1,12 +1,30 @@
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-import servicemanager
-import win32event
-import win32service
-import win32serviceutil
+
+def _dbg(msg: str) -> None:
+    try:
+        log = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "_svc_debug.txt")
+        with open(log, "a", encoding="utf-8") as _f:
+            _f.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+    except Exception:
+        pass
+
+
+_dbg(f"ENTRY argv={sys.argv}")
+
+import servicemanager  # noqa: E402
+_dbg("import servicemanager OK")
+import win32event  # noqa: E402
+_dbg("import win32event OK")
+import win32service  # noqa: E402
+_dbg("import win32service OK")
+import win32serviceutil  # noqa: E402
+_dbg("import win32serviceutil OK")
 
 _TUNNEL_URL_RE = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
 _SVC_NAME    = "DragConveyorTunnel"
@@ -41,7 +59,9 @@ class TunnelService(win32serviceutil.ServiceFramework):
                     )
 
     def SvcDoRun(self):
+        _dbg("SvcDoRun entered")
         self.ReportServiceStatus(win32service.SERVICE_RUNNING)
+        _dbg("ReportServiceStatus(RUNNING) called")
         # Standalone build layout:
         #   bin\tunnel_service\tunnel_service.exe  <- sys.executable
         #   bin\cloudflared.exe
@@ -147,4 +167,6 @@ class TunnelService(win32serviceutil.ServiceFramework):
 
 
 if __name__ == "__main__":
+    _dbg("calling HandleCommandLine")
     win32serviceutil.HandleCommandLine(TunnelService)
+    _dbg("HandleCommandLine returned")
