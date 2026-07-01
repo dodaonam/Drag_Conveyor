@@ -15,6 +15,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── Build tag: dd.mm.yy-N (e.g. 02.07.26-39) ────────────────────────────
+      - name: Set build tag
+        id: tag
+        shell: pwsh
+        run: |
+          $date = Get-Date -Format "dd.MM.yy"
+          $tag  = "${date}-${{ github.run_number }}"
+          echo "value=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Build tag: $tag"
+
       # ── setup-uv v8 với built-in package cache ───────────────────────────────
       - uses: astral-sh/setup-uv@v8.2.0
         with:
@@ -95,8 +105,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist\DragConveyor\bin\tunnel_service | Out-Null
           Copy-Item vendor\cloudflared.exe  dist\DragConveyor\bin\
           Copy-Item vendor\wkhtmltopdf.exe  dist\DragConveyor\bin\
-          Copy-Item "dist\tunnel_service_build\service.dist\*" `
-            "dist\DragConveyor\bin\tunnel_service\" -Recurse -Force
+          # Nuitka names the .dist dir after --output-filename (tunnel_service.dist)
+          # or after the script stem (service.dist) depending on version — handle both.
+          $svcDist = if (Test-Path "dist\tunnel_service_build\tunnel_service.dist") {
+            "dist\tunnel_service_build\tunnel_service.dist"
+          } else {
+            "dist\tunnel_service_build\service.dist"
+          }
+          if (-not (Test-Path $svcDist)) {
+            Write-Error "tunnel_service .dist directory not found (checked tunnel_service.dist and service.dist)"
+            exit 1
+          }
+          Write-Host "Copying tunnel_service dist from: $svcDist"
+          Copy-Item "$svcDist\*" "dist\DragConveyor\bin\tunnel_service\" -Recurse -Force
 
       # ── Build installer ───────────────────────────────────────────────────────
       - name: Build installer
@@ -108,18 +129,19 @@ jobs:
       - name: Package zip
         shell: pwsh
         run: |
+          $tag = "${{ steps.tag.outputs.value }}"
           Compress-Archive -Path dist\DragConveyor `
-            -DestinationPath DragConveyor_v${{ github.run_number }}.zip -Force
+            -DestinationPath "DragConveyor_${tag}.zip" -Force
 
       # ── Upload artifacts to GitHub Releases ──────────────────────────────────
       # overwrite: true — tránh lỗi HTTP 422 khi re-run cùng tag
       - name: Upload to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.run_number }}
-          name: "Build v${{ github.run_number }}"
+          tag_name: v${{ steps.tag.outputs.value }}
+          name: ${{ steps.tag.outputs.value }}
           body: "Commit: ${{ github.sha }}"
           overwrite_files: true
           files: |
             DragConveyor_Setup.exe
-            DragConveyor_v${{ github.run_number }}.zip
+            DragConveyor_${{ steps.tag.outputs.value }}.zip
