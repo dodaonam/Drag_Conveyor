@@ -167,6 +167,18 @@ class TunnelService(win32serviceutil.ServiceFramework):
 
 
 if __name__ == "__main__":
-    _dbg("calling HandleCommandLine")
-    win32serviceutil.HandleCommandLine(TunnelService)
-    _dbg("HandleCommandLine returned")
+    if len(sys.argv) == 1:
+        # Launched by SCM with no arguments — call dispatcher directly.
+        # HandleCommandLine's no-arg path adds overhead that can cause
+        # the 30-second SCM timeout in Nuitka-compiled binaries.
+        _dbg("SCM mode: calling servicemanager directly")
+        servicemanager.Initialize()
+        _dbg("Initialize OK")
+        servicemanager.PrepareToHostSingle(TunnelService)
+        _dbg("PrepareToHostSingle OK")
+        servicemanager.StartServiceCtrlDispatcher()
+        _dbg("StartServiceCtrlDispatcher returned")
+    else:
+        _dbg(f"CLI mode args={sys.argv[1:]}: calling HandleCommandLine")
+        win32serviceutil.HandleCommandLine(TunnelService)
+        _dbg("HandleCommandLine returned")
