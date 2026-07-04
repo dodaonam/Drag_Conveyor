@@ -62,7 +62,7 @@
 # nuitka-project: --include-data-files=server/preprocess.py=server/preprocess.py
 # nuitka-project: --include-data-files=server/path_bootstrap.py=server/path_bootstrap.py
 # nuitka-project: --include-data-files=server/update_cors.py=server/update_cors.py
-# nuitka-project: --include-data-files=weights/**/*.onnx=weights/
+# nuitka-project: --include-data-files=weights=weights=**/*.onnx
 
 from app import SetupApp
 
