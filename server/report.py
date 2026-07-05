@@ -151,12 +151,13 @@ def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | N
 
 def render_pdf(html: str) -> bytes:
     import sys
+    import platform
+    from pathlib import Path as _Path
     import pdfkit
-    if globals().get("__compiled__", False):
-        import platform
-        from pathlib import Path as _Path
-        exe_name = "wkhtmltopdf.exe" if platform.system() == "Windows" else "wkhtmltopdf"
-        cfg = pdfkit.configuration(wkhtmltopdf=str(_Path(sys.executable).parent / "bin" / exe_name))
+    exe_name = "wkhtmltopdf.exe" if platform.system() == "Windows" else "wkhtmltopdf"
+    bundled_path = _Path(sys.executable).parent / "bin" / exe_name
+    if bundled_path.exists():
+        cfg = pdfkit.configuration(wkhtmltopdf=str(bundled_path))
     else:
         cfg = pdfkit.configuration()
     return pdfkit.from_string(html, False, configuration=cfg,
