@@ -152,7 +152,7 @@ def build_html(report_data: dict, meta: dict, images_by_track: dict[int, str | N
 def render_pdf(html: str) -> bytes:
     import sys
     import pdfkit
-    if getattr(sys, "frozen", False):
+    if globals().get("__compiled__", False):
         import platform
         from pathlib import Path as _Path
         exe_name = "wkhtmltopdf.exe" if platform.system() == "Windows" else "wkhtmltopdf"
