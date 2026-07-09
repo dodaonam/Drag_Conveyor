@@ -168,61 +168,106 @@ class _HoverTooltip:
         self._tipwindow = None
 
 
-_advapi32_cache: "tuple | None" = None
-_svc_status_cls = None
+def _service_control_command(action: str) -> str:
+    if action == "restart":
+        return (
+            f"sc stop {_SERVICE_NAME} > nul 2>&1 "
+            f"& timeout /t 1 /nobreak > nul "
+            f"& sc start {_SERVICE_NAME}"
+        )
+    if action == "stop":
+        return f"sc stop {_SERVICE_NAME}"
+    raise ValueError(f"Unsupported service action: {action}")
 
 
-def _advapi32():
-    """Return cached (advapi32 WinDLL, ctypes module) with restype/argtypes declared.
-
-    SC_HANDLE is pointer-sized (8 bytes on 64-bit). Without HANDLE restype
-    ctypes defaults to c_int (4 bytes) and truncates handles on 64-bit Windows.
-    """
-    global _advapi32_cache
-    if _advapi32_cache is not None:
-        return _advapi32_cache
+def _run_elevated_process(file_path: str, parameters: str, *, timeout_s: float) -> int:
     import ctypes
     import ctypes.wintypes
-    a32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    SC_HANDLE = ctypes.wintypes.HANDLE
-    a32.OpenSCManagerW.restype    = SC_HANDLE
-    a32.OpenSCManagerW.argtypes   = [
-        ctypes.wintypes.LPCWSTR, ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD,
+
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040
+    WAIT_OBJECT_0 = 0x00000000
+    WAIT_TIMEOUT = 0x00000102
+    SW_HIDE = 0
+    ERROR_CANCELLED = 1223
+
+    class SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", ctypes.wintypes.DWORD),
+            ("fMask", ctypes.wintypes.ULONG),
+            ("hwnd", ctypes.wintypes.HWND),
+            ("lpVerb", ctypes.wintypes.LPCWSTR),
+            ("lpFile", ctypes.wintypes.LPCWSTR),
+            ("lpParameters", ctypes.wintypes.LPCWSTR),
+            ("lpDirectory", ctypes.wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", ctypes.wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", ctypes.wintypes.LPCWSTR),
+            ("hkeyClass", ctypes.wintypes.HKEY),
+            ("dwHotKey", ctypes.wintypes.DWORD),
+            ("hIcon", ctypes.wintypes.HANDLE),
+            ("hProcess", ctypes.wintypes.HANDLE),
+        ]
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+    shell32.ShellExecuteExW.restype = ctypes.wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = ctypes.wintypes.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
     ]
-    a32.OpenServiceW.restype      = SC_HANDLE
-    a32.OpenServiceW.argtypes     = [
-        SC_HANDLE, ctypes.wintypes.LPCWSTR, ctypes.wintypes.DWORD,
-    ]
-    a32.StartServiceW.restype     = ctypes.wintypes.BOOL
-    a32.StartServiceW.argtypes    = [SC_HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
-    a32.QueryServiceStatus.restype  = ctypes.wintypes.BOOL
-    a32.QueryServiceStatus.argtypes = [SC_HANDLE, ctypes.c_void_p]
-    a32.ControlService.restype    = ctypes.wintypes.BOOL
-    a32.ControlService.argtypes   = [SC_HANDLE, ctypes.wintypes.DWORD, ctypes.c_void_p]
-    a32.CloseServiceHandle.restype  = ctypes.wintypes.BOOL
-    a32.CloseServiceHandle.argtypes = [SC_HANDLE]
-    _advapi32_cache = (a32, ctypes)
-    return _advapi32_cache
+    kernel32.GetExitCodeProcess.restype = ctypes.wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+    info = SHELLEXECUTEINFOW()
+    info.cbSize = ctypes.sizeof(SHELLEXECUTEINFOW)
+    info.fMask = SEE_MASK_NOCLOSEPROCESS
+    info.lpVerb = "runas"
+    info.lpFile = file_path
+    info.lpParameters = parameters
+    info.nShow = SW_HIDE
+
+    if not shell32.ShellExecuteExW(ctypes.byref(info)):
+        err = ctypes.get_last_error()
+        if err == ERROR_CANCELLED:
+            raise RuntimeError("Người dùng đã hủy yêu cầu quyền admin.")
+        raise RuntimeError(f"Không thể chạy lệnh quyền admin (Windows error {err}).")
+
+    try:
+        wait_code = kernel32.WaitForSingleObject(info.hProcess, int(timeout_s * 1000))
+        if wait_code == WAIT_TIMEOUT:
+            raise RuntimeError("Lệnh quyền admin chạy quá lâu và đã bị timeout.")
+        if wait_code != WAIT_OBJECT_0:
+            raise RuntimeError(f"WaitForSingleObject thất bại (code={wait_code}).")
+
+        exit_code = ctypes.wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(exit_code)):
+            err = ctypes.get_last_error()
+            raise RuntimeError(f"Không đọc được mã thoát tiến trình elevated (error {err}).")
+        return int(exit_code.value)
+    finally:
+        if info.hProcess:
+            kernel32.CloseHandle(info.hProcess)
 
 
-def _get_svc_status_cls():
-    global _svc_status_cls
-    if _svc_status_cls is None:
-        _, ctypes = _advapi32()
-
-        class _Cls(ctypes.Structure):
-            _fields_ = [
-                ("dwServiceType",             ctypes.c_ulong),
-                ("dwCurrentState",            ctypes.c_ulong),
-                ("dwControlsAccepted",        ctypes.c_ulong),
-                ("dwWin32ExitCode",           ctypes.c_ulong),
-                ("dwServiceSpecificExitCode", ctypes.c_ulong),
-                ("dwCheckPoint",              ctypes.c_ulong),
-                ("dwWaitHint",                ctypes.c_ulong),
-            ]
-
-        _svc_status_cls = _Cls
-    return _svc_status_cls
+def _run_elevated_service_command(
+    command: str,
+    *,
+    timeout_s: float,
+    ok_exit_codes: tuple[int, ...] = (0,),
+) -> None:
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    cmd_exe = system_root / "System32" / "cmd.exe"
+    exit_code = _run_elevated_process(str(cmd_exe), f"/c {command}", timeout_s=timeout_s)
+    if exit_code not in ok_exit_codes:
+        allowed = ", ".join(str(code) for code in ok_exit_codes)
+        raise RuntimeError(
+            f"Lệnh service trả về mã {exit_code} (cho phép: {allowed})."
+        )
 
 
 class SetupApp(tk.Tk):
@@ -513,7 +558,7 @@ class SetupApp(tk.Tk):
 
     def _restart_worker(self) -> None:
         self._stopping = True
-        self._stop_background_processes()
+        self._stop_background_processes(stop_tunnel=False)
         self._uvicorn_error = None
         time.sleep(_RESTART_DELAY_S)
         self.after(0, self._start)
@@ -560,15 +605,8 @@ class SetupApp(tk.Tk):
         self.after(0, lambda: self._set_status_detail("Đang kiểm tra máy chủ cục bộ..."))
         _t0 = time.monotonic()
 
-        # Stop any stale running service BEFORE clearing the URL file.
-        # If the service is left running from a previous crashed session, StartServiceW
-        # returns 1056 (ALREADY_RUNNING) but the URL file was just deleted — the service
-        # won't rewrite it and _wait_for_tunnel_url would loop forever.
-        # Stopping here also resolves the rapid-restart 1061 (CONTROL_IN_PROGRESS) race:
-        # the stop is sent before the server-ready poll, giving the service time to finish.
-        self._stop_tunnel_service()
-
         # Remove stale tunnel_url.txt from a previous session so we don't read an old URL.
+        # The service restart below will write a fresh URL back if it starts successfully.
         try:
             _TUNNEL_URL_FILE.unlink(missing_ok=True)
         except Exception:
@@ -584,7 +622,7 @@ class SetupApp(tk.Tk):
         self._append_log(f"Local server ready after {time.monotonic() - _t0:.1f}s")
         self.after(0, lambda: self._set_status("starting_tunnel"))
         self.after(0, lambda: self._set_status_detail(
-            "Máy chủ cục bộ đã sẵn sàng. Đang khởi động tunnel..."
+            "Máy chủ cục bộ đã sẵn sàng. Windows có thể yêu cầu quyền admin để khởi động tunnel..."
         ))
 
         if sys.platform != "win32":
@@ -594,120 +632,33 @@ class SetupApp(tk.Tk):
             return
 
         try:
-            self._start_tunnel_service()
-        except Exception:
+            self._restart_tunnel_service()
+        except Exception as exc:
             self._fail_startup(
                 "Không thể khởi động DragConveyorTunnel service. "
-                "Kiểm tra service đã được cài đặt chưa (chạy DragConveyor_Setup.exe).",
-                include_traceback=True,
+                "Windows cần quyền admin để start/stop service. "
+                f"Chi tiết: {exc}",
             )
             return
 
         self._wait_for_tunnel_url(gen)
 
-    def _start_tunnel_service(self) -> None:
+    def _restart_tunnel_service(self) -> None:
         if sys.platform != "win32":
             return
-
-        import time
-
-        SC_MANAGER_CONNECT            = 0x0001
-        SERVICE_START                 = 0x0010
-        SERVICE_QUERY_STATUS          = 0x0004
-        SERVICE_RUNNING               = 0x00000004
-        SERVICE_STOPPED               = 0x00000001
-        ERROR_SERVICE_ALREADY_RUNNING     = 1056
-        ERROR_SERVICE_CONTROL_IN_PROGRESS = 1061
-        ERROR_SERVICE_REQUEST_TIMEOUT     = 1053
-
-        advapi32, ctypes = _advapi32()
-        manager = advapi32.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
-        if not manager:
-            raise RuntimeError("OpenSCManagerW failed — service chưa được cài đặt?")
-        try:
-            svc = advapi32.OpenServiceW(
-                manager, _SERVICE_NAME, SERVICE_START | SERVICE_QUERY_STATUS
-            )
-            if not svc:
-                err = ctypes.get_last_error()
-                if err == 5:  # ERROR_ACCESS_DENIED
-                    raise RuntimeError(
-                        f"Quyền truy cập bị từ chối khi mở service '{_SERVICE_NAME}' (error 5). "
-                        "Gỡ cài đặt và cài lại bằng DragConveyor_Setup.exe."
-                    )
-                raise RuntimeError(
-                    f"Không tìm thấy service '{_SERVICE_NAME}' (error {err}). "
-                    "Chạy DragConveyor_Setup.exe để cài đặt."
-                )
-            try:
-                started = advapi32.StartServiceW(svc, 0, None)
-                if not started:
-                    err = ctypes.get_last_error()
-                    if err in (ERROR_SERVICE_ALREADY_RUNNING,
-                               ERROR_SERVICE_CONTROL_IN_PROGRESS):
-                        return  # already running — done
-                    if err != ERROR_SERVICE_REQUEST_TIMEOUT:
-                        raise RuntimeError(f"StartServiceW thất bại: Windows error {err}")
-                    # 1053: SCM timed out waiting for service to report RUNNING.
-                    # The service process may still be initializing — fall through
-                    # to poll below so we give it extra time.
-
-                # Poll until SERVICE_RUNNING (up to 15 s).
-                # Needed because Nuitka standalone startup can exceed SCM's default
-                # wait hint before the service reports SERVICE_RUNNING.
-                status = _get_svc_status_cls()()
-                deadline = time.monotonic() + 15.0
-                while time.monotonic() < deadline:
-                    if advapi32.QueryServiceStatus(
-                        svc, ctypes.cast(ctypes.byref(status), ctypes.c_void_p)
-                    ):
-                        if status.dwCurrentState == SERVICE_RUNNING:
-                            return
-                        if status.dwCurrentState == SERVICE_STOPPED:
-                            raise RuntimeError(
-                                f"Service '{_SERVICE_NAME}' dừng ngay sau khi khởi động "
-                                f"(Win32ExitCode={status.dwWin32ExitCode}). "
-                                "Kiểm tra Windows Event Viewer > Application để biết chi tiết."
-                            )
-                    time.sleep(0.5)
-                raise RuntimeError(
-                    f"Service '{_SERVICE_NAME}' không đạt trạng thái RUNNING sau 15 giây. "
-                    "Kiểm tra Windows Event Viewer > Application để biết chi tiết."
-                )
-            finally:
-                advapi32.CloseServiceHandle(svc)
-        finally:
-            advapi32.CloseServiceHandle(manager)
+        _run_elevated_service_command(
+            _service_control_command("restart"),
+            timeout_s=20.0,
+        )
 
     def _stop_tunnel_service(self) -> None:
         if sys.platform != "win32":
             return
-
-        SC_MANAGER_CONNECT   = 0x0001
-        SERVICE_STOP         = 0x0020
-        SERVICE_CONTROL_STOP = 0x00000001
-
-        advapi32, ctypes = _advapi32()
-        manager = advapi32.OpenSCManagerW(None, None, SC_MANAGER_CONNECT)
-        if not manager:
-            return
-        try:
-            svc = advapi32.OpenServiceW(manager, _SERVICE_NAME, SERVICE_STOP)
-            if not svc:
-                return
-            try:
-                status = _get_svc_status_cls()()
-                # Pass status as c_void_p — ControlService requires non-NULL lpServiceStatus.
-                advapi32.ControlService(
-                    svc,
-                    SERVICE_CONTROL_STOP,
-                    ctypes.cast(ctypes.byref(status), ctypes.c_void_p),
-                )
-                # Return value not checked: 1062 (NOT_ACTIVE) = already stopped, which is OK.
-            finally:
-                advapi32.CloseServiceHandle(svc)
-        finally:
-            advapi32.CloseServiceHandle(manager)
+        _run_elevated_service_command(
+            _service_control_command("stop"),
+            timeout_s=15.0,
+            ok_exit_codes=(0, 1060, 1062),
+        )
 
     def _wait_for_tunnel_url(self, gen: int) -> None:
         while True:
@@ -752,18 +703,26 @@ class SetupApp(tk.Tk):
         except Exception:
             self._append_log(f"CORS update failed: {traceback.format_exc()}")
 
-    def _stop(self) -> None:
+    def _stop(self) -> bool:
         self._stopping = True
         self._append_log("User stopped server")
-        self._stop_background_processes()
+        try:
+            self._stop_background_processes()
+        except Exception as exc:
+            self._append_log(f"Stop failed: {exc}")
+            self._stopping = False
+            self._set_status("crashed", detail=f"Không thể dừng tunnel service. {exc}")
+            return False
         self._uvicorn_error = None
         self._set_status("stopped")
+        return True
 
-    def _stop_background_processes(self) -> None:
+    def _stop_background_processes(self, *, stop_tunnel: bool = True) -> None:
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None
-        self._stop_tunnel_service()
+        if stop_tunnel:
+            self._stop_tunnel_service()
         try:
             _TUNNEL_URL_FILE.unlink(missing_ok=True)
         except Exception:
@@ -851,7 +810,7 @@ class SetupApp(tk.Tk):
             pass
 
         def apply_failure() -> None:
-            self._stop_background_processes()
+            self._stop_background_processes(stop_tunnel=False)
             self._set_status("crashed", detail=detail)
 
         self.after(0, apply_failure)
@@ -865,7 +824,7 @@ class SetupApp(tk.Tk):
                 self._qr_canvas.grid_remove()
             case "starting_tunnel":
                 self._status_var.set("Máy chủ cục bộ đã sẵn sàng. Đang tạo đường dẫn public...")
-                self._detail_var.set("Đang chờ DragConveyorTunnel service cấp URL tunnel...")
+                self._detail_var.set("Đang chờ xác nhận quyền admin để restart DragConveyorTunnel service...")
                 self._status_lbl.config(fg="#888888")
                 self._qr_canvas.grid_remove()
             case "restarting":
@@ -900,10 +859,8 @@ class SetupApp(tk.Tk):
             self._append_log("GUI closed by user")
         except Exception:
             pass
-        try:
-            self._stop()
-        except Exception:
-            pass
+        if not self._stop():
+            return
         self.destroy()
         # Force-exit: asyncio/uvicorn threads inside the Nuitka binary do not
         # always release cleanly, leaving the process alive after the window
