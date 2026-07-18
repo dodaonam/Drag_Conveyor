@@ -36,9 +36,21 @@ Filename: "{sys}\cmd.exe"; \
   Flags: shellexec runhidden waituntilterminated; \
   StatusMsg: "Đang đăng ký Windows Service (cần quyền admin)..."
 
-; GUI sẽ start/stop service bằng UAC khi cần, nên không nới quyền cho user thường.
+; ── Step 2: Grant start/stop rights to interactive users ────────────────────────────────
+; Default service DACL only allows Administrators to start/stop.
+; The GUI runs as a normal user and calls StartServiceW/ControlService —
+; it needs SERVICE_START + SERVICE_STOP without being admin.
+; SDDL breakdown:
+;   (A;;CCLCSWRPWPDTLOCRRC;;;SY)            = SYSTEM: full control
+;   (A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)    = Administrators: full control
+;   (A;;CCLCSWRPWPLOCRRC;;;IU)              = InteractiveUsers: query+start+stop+status
+Filename: "{sys}\sc.exe"; \
+  Parameters: "sdset DragConveyorTunnel D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPLOCRRC;;;IU)"; \
+  Verb: "runas"; \
+  Flags: shellexec runhidden waituntilterminated; \
+  StatusMsg: "Đang cấp quyền cho service..."
 
-; ── Step 2: Restrict write access on the service binary directory ────────────────────────
+; ── Step 3: Restrict write access on the service binary directory ────────────────────────
 ; LocalSystem service + user-writable binary = local privilege escalation risk.
 ; Remove write permission for regular users; only Administrators and SYSTEM can modify files.
 Filename: "{sys}\icacls.exe"; \
@@ -47,7 +59,7 @@ Filename: "{sys}\icacls.exe"; \
   Flags: shellexec runhidden waituntilterminated; \
   StatusMsg: "Đang cấu hình bảo mật thư mục service..."
 
-; ── Step 3: Launch app after install (optional, user can skip) ──────────────────────────
+; ── Step 4: Launch app after install (optional, user can skip) ──────────────────────────
 Filename: "{app}\DragConveyor.exe"; \
   Description: "Khởi động Drag Conveyor ngay bây giờ"; \
   Flags: nowait postinstall skipifsilent

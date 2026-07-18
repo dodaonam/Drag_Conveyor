@@ -7,7 +7,6 @@ from pathlib import Path
 
 from gui.app import (
     _parse_margin_value,
-    _service_control_command,
     load_profile_margin_values,
     resolve_margin_values,
     update_profile_margin_values,
@@ -59,14 +58,6 @@ class GuiProfileMarginTests(unittest.TestCase):
             auto = updated["inspection"]["auto_baseline"]
             self.assertEqual(auto["length_upper_margin"], 0.12)
             self.assertEqual(auto["width_lower_margin"], 0.08)
-
-    def test_service_control_command_restart_restarts_service(self) -> None:
-        cmd = _service_control_command("restart")
-        self.assertIn("sc stop DragConveyorTunnel", cmd)
-        self.assertIn("sc start DragConveyorTunnel", cmd)
-
-    def test_service_control_command_stop_stops_service(self) -> None:
-        self.assertEqual(_service_control_command("stop"), "sc stop DragConveyorTunnel")
 
 
 if __name__ == "__main__":

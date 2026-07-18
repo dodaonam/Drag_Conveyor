@@ -3,33 +3,51 @@ setlocal enabledelayedexpansion
 echo === Drag Conveyor Windows Build ===
 echo.
 
+:: This local build mirrors .github/workflows/build-windows.yml, except it
+:: creates artifacts locally instead of uploading a GitHub Release.
+
 :: Verify required vendor files
 if not exist "vendor\cloudflared.exe" (
     echo [ERROR] vendor\cloudflared.exe not found
-    echo         Download from: https://github.com/cloudflare/cloudflared/releases
     exit /b 1
 )
 if not exist "vendor\wkhtmltopdf.exe" (
     echo [ERROR] vendor\wkhtmltopdf.exe not found
-    echo         Extract from installer: https://github.com/wkhtmltopdf/packaging/releases
     exit /b 1
 )
 
-set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-if not exist %ISCC% (
-    echo [ERROR] Inno Setup 6 not found at %ISCC%
-    echo         Download from: https://jrsoftware.org/isinfo.php
+set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+if not exist "%ISCC%" (
+    echo [ERROR] Inno Setup 6 not found at "%ISCC%"
     exit /b 1
 )
 
-:: ── Step 0: Build tunnel_service (Nuitka-winsvc standalone) ──────────────────
-echo [0/5] Building tunnel_service with Nuitka-winsvc...
-uv pip install pywin32 Nuitka-winsvc
-if errorlevel 1 ( echo [ERROR] pip install pywin32 Nuitka-winsvc failed & exit /b 1 )
+for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format 'dd.MM.yy-HHmmss'"') do set "BUILD_TAG=%%I"
+set "ZIP_NAME=DragConveyor_%BUILD_TAG%.zip"
+echo Build tag: %BUILD_TAG%
 
+:: ── Step 0: Remove only previous Nuitka outputs, never source/config files ──
+echo.
+echo [0/6] Cleaning previous build output...
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; try { $targets = @('dist\DragConveyor', 'dist\tunnel_service_build'); foreach ($target in $targets) { if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force } }; Get-ChildItem 'dist' -Directory -Filter '*.dist' -ErrorAction SilentlyContinue | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }; $remaining = @($targets | Where-Object { Test-Path -LiteralPath $_ }); $remaining += @(Get-ChildItem 'dist' -Directory -Filter '*.dist' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }); if ($remaining.Count -gt 0) { throw ('Previous build output remains: ' + ($remaining -join ', ')) } } catch { Write-Error $_; exit 1 }"
+if errorlevel 1 ( echo [ERROR] Could not fully clean previous Nuitka output & exit /b 1 )
+
+:: ── Step 1: Install dependencies ────────────────────────────────────────────
+echo.
+echo [1/6] Installing dependencies...
+uv sync
+if errorlevel 1 ( echo [ERROR] uv sync failed & exit /b 1 )
+
+uv pip install nuitka ordered-set pywin32
+if errorlevel 1 ( echo [ERROR] build dependencies install failed & exit /b 1 )
+
+:: ── Step 2: Build tunnel_service (same flags as GitHub Actions) ─────────────
+echo.
+echo [2/6] Building tunnel_service...
 uv run python -m nuitka ^
+    --assume-yes-for-downloads ^
+    --lto=no ^
     --mode=standalone ^
-    --windows-service ^
     --include-module=servicemanager ^
     --include-module=win32service ^
     --include-module=win32serviceutil ^
@@ -40,64 +58,47 @@ uv run python -m nuitka ^
     tunnel_service/service.py
 if errorlevel 1 ( echo [ERROR] tunnel_service build failed & exit /b 1 )
 
-:: ── Step 1: Install main dependencies ────────────────────────────────────────
+:: ── Step 3: Build DragConveyor with Nuitka ──────────────────────────────────
 echo.
-echo [1/5] Installing dependencies...
-uv sync
-if errorlevel 1 ( echo [ERROR] uv sync failed & exit /b 1 )
+echo [3/6] Building DragConveyor...
+uv run python -m nuitka --assume-yes-for-downloads --lto=no gui/__main__.py
+if errorlevel 1 ( echo [ERROR] DragConveyor build failed & exit /b 1 )
 
-uv pip install ordered-set Nuitka-winsvc
-if errorlevel 1 ( echo [ERROR] nuitka install failed & exit /b 1 )
+:: Nuitka can name the output after --output-filename or after __main__.py.
+if exist "dist\DragConveyor" rmdir /s /q "dist\DragConveyor"
+powershell -NoProfile -Command "$dist = Get-ChildItem dist -Directory | Where-Object { $_.Name -like '*.dist' } | Select-Object -First 1; if (-not $dist) { Write-Error 'No .dist directory found in dist\'; exit 1 }; Write-Host ('Found: ' + $dist.Name + ' — renaming to DragConveyor'); Rename-Item -LiteralPath $dist.FullName -NewName 'DragConveyor'"
+if errorlevel 1 ( echo [ERROR] Rename Nuitka output failed & exit /b 1 )
 
-:: ── Step 2: Build DragConveyor with Nuitka ───────────────────────────────────
+:: ── Step 4: Verify secrets and copy vendor binaries ─────────────────────────
 echo.
-echo [2/5] Building DragConveyor with Nuitka...
-uv run python -m nuitka gui/__main__.py
-if errorlevel 1 ( echo [ERROR] Nuitka build failed & exit /b 1 )
-
-:: Nuitka names the output dir after the script stem, not --output-filename.
-:: gui/__main__.py -> dist\__main__.dist\  (--output-filename only renames the exe inside)
-if exist dist\DragConveyor ( rmdir /s /q dist\DragConveyor )
-rename dist\__main__.dist DragConveyor
-if errorlevel 1 ( echo [ERROR] Rename dist\__main__.dist failed & exit /b 1 )
-
-:: Verify secrets were NOT bundled
+echo [4/6] Verifying package and copying vendor binaries...
 if exist "dist\DragConveyor\server\.env" (
-    echo [ERROR] SECURITY: server\.env was bundled into dist! Aborting.
+    echo [ERROR] SECURITY: server\.env was bundled into dist!
     exit /b 1
 )
 if exist "dist\DragConveyor\config\app_settings.json" (
-    echo [ERROR] SECURITY: config\app_settings.json was bundled into dist! Aborting.
+    echo [ERROR] SECURITY: config\app_settings.json was bundled into dist!
     exit /b 1
 )
 
-:: ── Step 3: Copy vendor binaries ─────────────────────────────────────────────
-echo.
-echo [3/5] Copying vendor binaries...
-if not exist "dist\DragConveyor\bin\tunnel_service" ^
-    mkdir dist\DragConveyor\bin\tunnel_service
-copy /Y vendor\cloudflared.exe   dist\DragConveyor\bin\cloudflared.exe
-copy /Y vendor\wkhtmltopdf.exe   dist\DragConveyor\bin\wkhtmltopdf.exe
-xcopy /E /Y /I dist\tunnel_service_build\service.dist ^
-    dist\DragConveyor\bin\tunnel_service
+powershell -NoProfile -Command "$svcDist = if (Test-Path 'dist\tunnel_service_build\tunnel_service.dist') { 'dist\tunnel_service_build\tunnel_service.dist' } else { 'dist\tunnel_service_build\service.dist' }; if (-not (Test-Path $svcDist)) { Write-Error 'tunnel_service .dist directory not found'; exit 1 }; New-Item -ItemType Directory -Force -Path 'dist\DragConveyor\bin\tunnel_service' | Out-Null; Copy-Item 'vendor\cloudflared.exe' 'dist\DragConveyor\bin\'; Copy-Item 'vendor\wkhtmltopdf.exe' 'dist\DragConveyor\bin\'; Copy-Item (Join-Path $svcDist '*') 'dist\DragConveyor\bin\tunnel_service\' -Recurse -Force"
+if errorlevel 1 ( echo [ERROR] Copy vendor binaries failed & exit /b 1 )
 
-:: ── Step 4: Build installer ───────────────────────────────────────────────────
+:: ── Step 5: Build installer ─────────────────────────────────────────────────
 echo.
-echo [4/5] Building installer...
-%ISCC% installer\setup.iss
+echo [5/6] Building installer...
+"%ISCC%" installer\setup.iss
 if errorlevel 1 ( echo [ERROR] ISCC failed & exit /b 1 )
 
-:: ── Step 5: Package zip ───────────────────────────────────────────────────────
+:: ── Step 6: Package local zip ───────────────────────────────────────────────
 echo.
-echo [5/5] Packaging zip...
-if exist DragConveyor_v1.0.zip del DragConveyor_v1.0.zip
-powershell -NoProfile -Command ^
-    "Compress-Archive -Path dist\DragConveyor -DestinationPath DragConveyor_v1.0.zip -Force"
-if errorlevel 1 ( echo [ERROR] Zip failed & exit /b 1 )
+echo [6/6] Packaging zip...
+powershell -NoProfile -Command "Compress-Archive -Path 'dist\DragConveyor' -DestinationPath '%ZIP_NAME%' -Force"
+if errorlevel 1 ( echo [ERROR] Zip packaging failed & exit /b 1 )
 
 echo.
 echo === Build complete ===
 echo     DragConveyor_Setup.exe
-echo     DragConveyor_v1.0.zip
-for %%I in (DragConveyor_v1.0.zip) do echo     Zip size: %%~zI bytes
+echo     %ZIP_NAME%
+for %%I in ("%ZIP_NAME%") do echo     Zip size: %%~zI bytes
 endlocal
