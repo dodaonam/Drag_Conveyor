@@ -789,7 +789,7 @@ async function saveReport() {
       }),
     });
     btn.textContent = 'Đã lưu ✓';
-    setSaveMsg('Đã lưu: ' + res.filename, false);
+    setSaveMsg('Đã lưu PDF: ' + res.filename + ' · Đã cập nhật Excel: ' + res.excel_filename, false);
   } catch (e) {
     btn.disabled = false;
     btn.textContent = 'Lưu kết quả';

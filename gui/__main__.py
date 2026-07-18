@@ -28,6 +28,7 @@
 # nuitka-project: --include-package=dotenv
 # nuitka-project: --include-package=qrcode
 # nuitka-project: --include-package=pdfkit
+# nuitka-project: --include-package=openpyxl
 # nuitka-project: --include-package=numpy
 # nuitka-project: --include-package=onnxruntime
 # nuitka-project: --include-package=anyio
@@ -57,6 +58,7 @@
 # nuitka-project: --include-data-files=server/worker.py=server/worker.py
 # nuitka-project: --include-data-files=server/r2.py=server/r2.py
 # nuitka-project: --include-data-files=server/report.py=server/report.py
+# nuitka-project: --include-data-files=server/excel_log.py=server/excel_log.py
 # nuitka-project: --include-data-files=server/report.css=server/report.css
 # nuitka-project: --include-data-files=server/settings.py=server/settings.py
 # nuitka-project: --include-data-files=server/preprocess.py=server/preprocess.py
