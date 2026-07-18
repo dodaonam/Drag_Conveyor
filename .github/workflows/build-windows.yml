@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-latest
@@ -15,25 +19,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── Build tag: dd.mm.yy-N (e.g. 02.07.26-39) ────────────────────────────
       - name: Set build tag
         id: tag
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $date = Get-Date -Format "dd.MM.yy"
-          $tag  = "${date}-${{ github.run_number }}"
-          echo "value=$tag" >> $env:GITHUB_OUTPUT
-          Write-Host "Build tag: $tag"
+          $date = Get-Date -AsUTC -Format "dd.MM.yyyy"
+          $releaseTags = @(gh api --paginate "repos/${{ github.repository }}/releases?per_page=100" --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not read existing GitHub Releases to calculate the daily build number."
+          }
 
-      # ── setup-uv v8 với built-in package cache ───────────────────────────────
+          $maxDailyBuild = 0
+          $pattern = '^v' + [regex]::Escape($date) + '\.(\d+)$'
+          foreach ($releaseTag in $releaseTags) {
+            if ($releaseTag -match $pattern) {
+              $candidate = [int]$Matches[1]
+              if ($candidate -gt $maxDailyBuild) {
+                $maxDailyBuild = $candidate
+              }
+            }
+          }
+
+          $tag = "$date.$($maxDailyBuild + 1)"
+          echo "value=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Build tag: $tag (daily release number $($maxDailyBuild + 1))"
+
       - uses: astral-sh/setup-uv@v8.2.0
         with:
           enable-cache: true
 
-      # ── Cache Nuitka C compilation (clcache — built-in MSVC cache) ───────────
-      # Confirmed default path: %LOCALAPPDATA%\Nuitka\Nuitka\Cache
-      # (appdirs appauthor=None → fallback = appname → "Nuitka\Nuitka")
-      # restore-keys allows partial hit từ commit trước → tái dùng compiled .obj
       - name: Cache Nuitka compilation
         uses: actions/cache@v4
         with:
@@ -42,17 +58,11 @@ jobs:
           restore-keys: |
             nuitka-${{ runner.os }}-${{ runner.arch }}-
 
-      # ── Install dependencies (creates venv first, then add build/service extras) ─
       - name: Install dependencies
         run: |
           uv sync
           uv pip install nuitka ordered-set pywin32
 
-      # ── Build tunnel_service (Nuitka standalone) ──────────────────────────────
-      # --lto=no: tắt Link Time Optimization (/LTCG) — giảm thời gian link đáng kể
-      # --lto valid values: "yes", "no", "auto" (default auto → bật với MSVC)
-      # NOTE: --windows-service (nuitka-winsvc) removed — pywin32's HandleCommandLine
-      # already calls StartServiceCtrlDispatcher; the extra layer caused error 1053.
       - name: Build tunnel_service
         shell: pwsh
         run: |
@@ -69,23 +79,18 @@ jobs:
             --output-dir=dist/tunnel_service_build `
             tunnel_service/service.py
 
-      # ── Build DragConveyor with Nuitka ───────────────────────────────────────
       - name: Build DragConveyor with Nuitka
         run: uv run python -m nuitka --assume-yes-for-downloads --lto=no gui/__main__.py
 
-      # Nuitka 4.x may name the .dist dir after --output-filename (DragConveyor.dist)
-      # or after the script stem (__main__.dist). Find whichever exists and rename it.
-      # Rename-Item requires a plain name (no path separators) for -NewName.
       - name: Rename Nuitka output directory
         shell: pwsh
         run: |
           $dist = Get-ChildItem dist -Directory | Where-Object { $_.Name -like "*.dist" } | Select-Object -First 1
-          if (-not $dist) { Write-Error "No .dist directory found in dist\"; exit 1 }
-          Write-Host "Found: $($dist.Name) — renaming to DragConveyor"
+          if (-not $dist) { Write-Error "No .dist directory found in dist\\"; exit 1 }
+          Write-Host "Found: $($dist.Name) - renaming to DragConveyor"
           Rename-Item $dist.FullName DragConveyor
 
-      # ── Security check: secrets must NOT be bundled ───────────────────────────
-      - name: Verify secrets not bundled
+      - name: Verify installer staging
         shell: pwsh
         run: |
           if (Test-Path "dist\DragConveyor\server\.env") {
@@ -96,17 +101,16 @@ jobs:
             Write-Error "SECURITY: config\app_settings.json was bundled into dist!"
             exit 1
           }
-          Write-Host "Security check passed: no secrets in dist."
+          if (Test-Path "dist\DragConveyor\bin\cloudflared.exe") {
+            Write-Error "SECURITY: cloudflared.exe must not be bundled in installer staging"
+            exit 1
+          }
 
-      # ── Copy vendor binaries ─────────────────────────────────────────────────
-      - name: Copy vendor binaries
+      - name: Copy required runtime binaries
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist\DragConveyor\bin\tunnel_service | Out-Null
-          Copy-Item vendor\cloudflared.exe  dist\DragConveyor\bin\
-          Copy-Item vendor\wkhtmltopdf.exe  dist\DragConveyor\bin\
-          # Nuitka names the .dist dir after --output-filename (tunnel_service.dist)
-          # or after the script stem (service.dist) depending on version — handle both.
+          Copy-Item vendor\wkhtmltopdf.exe dist\DragConveyor\bin\
           $svcDist = if (Test-Path "dist\tunnel_service_build\tunnel_service.dist") {
             "dist\tunnel_service_build\tunnel_service.dist"
           } else {
@@ -116,32 +120,22 @@ jobs:
             Write-Error "tunnel_service .dist directory not found (checked tunnel_service.dist and service.dist)"
             exit 1
           }
-          Write-Host "Copying tunnel_service dist from: $svcDist"
           Copy-Item "$svcDist\*" "dist\DragConveyor\bin\tunnel_service\" -Recurse -Force
+          if (Test-Path "dist\DragConveyor\bin\cloudflared.exe") {
+            Write-Error "SECURITY: cloudflared.exe must not be bundled in installer staging"
+            exit 1
+          }
 
-      # ── Build installer ───────────────────────────────────────────────────────
       - name: Build installer
         shell: pwsh
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
 
-      # ── Package zip ───────────────────────────────────────────────────────────
-      - name: Package zip
-        shell: pwsh
-        run: |
-          $tag = "${{ steps.tag.outputs.value }}"
-          Compress-Archive -Path dist\DragConveyor `
-            -DestinationPath "DragConveyor_${tag}.zip" -Force
-
-      # ── Upload artifacts to GitHub Releases ──────────────────────────────────
-      # overwrite: true — tránh lỗi HTTP 422 khi re-run cùng tag
-      - name: Upload to GitHub Releases
+      - name: Upload setup to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.tag.outputs.value }}
           name: ${{ steps.tag.outputs.value }}
           body: "Commit: ${{ github.sha }}"
           overwrite_files: true
-          files: |
-            DragConveyor_Setup.exe
-            DragConveyor_${{ steps.tag.outputs.value }}.zip
+          files: DragConveyor_Setup.exe
