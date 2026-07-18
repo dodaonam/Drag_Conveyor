@@ -33,6 +33,7 @@ def _get_root() -> Path:
 
 _ROOT = _get_root()
 CONFIG_PATH = _ROOT / "config" / "app_settings.json"
+BASE_PROFILE_PATH = _ROOT / "config" / "base_profile.json"
 DEFAULT_REPORTS_DIR = str((_ROOT / "runtime" / "reports").resolve())
 _MAX_LOG_FILES = 10
 _POLL_INTERVAL_S = 1.0
@@ -51,6 +52,120 @@ FIELDS: list[tuple[str, str, str, bool, bool]] = [
     ("OpenAI API Key", "openai_api_key", "OPENAI_API_KEY", True, False),
     ("Thư mục lưu báo cáo", "reports_dir", "REPORTS_DIR", False, False),
 ]
+
+MARGIN_FIELDS: list[tuple[str, str]] = [
+    ("Ngưỡng thanh dài", "length_upper_margin"),
+    ("Ngưỡng thanh hẹp", "width_lower_margin"),
+]
+
+MARGIN_TOOLTIPS: dict[str, str] = {
+    "length_upper_margin": (
+        "Tăng giá trị để tránh nhầm các thanh bình thường thành thanh lỗi.\n"
+        "Giảm giá trị để tránh bỏ sót thanh lỗi thành thanh bình thường.\n"
+        "Giá trị nằm trong khoảng từ 0-1"
+    ),
+    "width_lower_margin": (
+        "Tăng giá trị để tránh nhầm các thanh bình thường thành thanh lỗi.\n"
+        "Giảm giá trị để tránh bỏ sót thanh lỗi thành thanh bình thường."
+        "Giá trị nằm trong khoảng từ 0-1"
+    ),
+}
+
+
+def _parse_margin_value(raw: str, label: str) -> float:
+    text = raw.strip().replace(",", ".")
+    if not text:
+        raise ValueError(f"{label} không được để trống.")
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise ValueError(f"{label} phải là số.") from exc
+    if not 0.0 <= value < 1.0:
+        raise ValueError(f"{label} phải nằm trong khoảng [0, 1).")
+    return value
+
+
+def resolve_margin_values(
+    raw_values: dict[str, str],
+) -> dict[str, float]:
+    parsed: dict[str, float] = {}
+    for label, key in MARGIN_FIELDS:
+        text = raw_values.get(key, "").strip()
+        if not text:
+            text = "0"
+        parsed[key] = _parse_margin_value(text, label)
+    return parsed
+
+
+def load_profile_margin_values(path: Path = BASE_PROFILE_PATH) -> dict[str, str]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        auto = raw["inspection"]["auto_baseline"]
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Không tìm thấy base profile: {path}") from exc
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"Không đọc được margin từ base profile: {path}") from exc
+
+    values: dict[str, str] = {}
+    for _, key in MARGIN_FIELDS:
+        value = auto.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"Giá trị {key} trong base profile không hợp lệ.")
+        values[key] = f"{float(value):g}"
+    return values
+
+
+def update_profile_margin_values(path: Path, margin_values: dict[str, float]) -> None:
+    from drag_conveyor.config import profile_from_dict
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    auto = raw["inspection"]["auto_baseline"]
+    for key, value in margin_values.items():
+        auto[key] = float(value)
+
+    # Validate the full profile before writing it back.
+    profile_from_dict(raw)
+    path.write_text(json.dumps(raw, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+class _HoverTooltip:
+    def __init__(self, widget: tk.Widget, text: str) -> None:
+        self._widget = widget
+        self._text = text
+        self._tipwindow: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._show, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _show(self, _event=None) -> None:
+        if self._tipwindow is not None:
+            return
+        tip = tk.Toplevel(self._widget)
+        tip.wm_overrideredirect(True)
+        tip.wm_attributes("-topmost", True)
+        x = self._widget.winfo_rootx() + self._widget.winfo_width() + 10
+        y = self._widget.winfo_rooty() - 4
+        tip.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(
+            tip,
+            text=self._text,
+            justify="left",
+            bg="#fff8db",
+            fg="#222222",
+            relief="solid",
+            borderwidth=1,
+            padx=8,
+            pady=6,
+            font=("Segoe UI", 8),
+        )
+        label.pack()
+        self._tipwindow = tip
+
+    def _hide(self, _event=None) -> None:
+        if self._tipwindow is None:
+            return
+        self._tipwindow.destroy()
+        self._tipwindow = None
 
 
 _advapi32_cache: "tuple | None" = None
@@ -120,6 +235,7 @@ class SetupApp(tk.Tk):
         self._stopping: bool = False
         self._server_gen: int = 0
         self._vars: dict[str, tk.StringVar] = {}
+        self._margin_vars: dict[str, tk.StringVar] = {}
         self._log_path = self._init_log_file()
         self._build_ui()
         self._load()
@@ -161,7 +277,49 @@ class SetupApp(tk.Tk):
                     font=("Segoe UI", 9),
                 ).grid(row=row, column=1, sticky="ew", **pad)
 
-        sep_row = len(FIELDS) + 1
+        tuning_sep_row = len(FIELDS) + 1
+        tk.Frame(self, height=1, bg="#cccccc").grid(
+            row=tuning_sep_row, column=0, columnspan=2, sticky="ew", padx=16, pady=10
+        )
+
+        tuning_title_row = tuning_sep_row + 1
+        tk.Label(self, text="Tinh chỉnh độ nhạy", font=("Segoe UI", 10, "bold")).grid(
+            row=tuning_title_row, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4)
+        )
+
+        for i, (label, key) in enumerate(MARGIN_FIELDS):
+            row = tuning_title_row + i + 1
+            label_cell = tk.Frame(self)
+            label_cell.grid(row=row, column=0, sticky="w", **pad)
+            tk.Label(
+                label_cell,
+                text=f"{label}  (0 đến dưới 1)",
+                anchor="w",
+                font=("Segoe UI", 9),
+            ).pack(side="left")
+            info = tk.Label(
+                label_cell,
+                text="!",
+                width=2,
+                font=("Segoe UI", 8, "bold"),
+                bg="#fff8db",
+                fg="#8a5a00",
+                relief="solid",
+                borderwidth=1,
+                cursor="hand2",
+            )
+            info.pack(side="left", padx=(6, 0))
+            _HoverTooltip(info, MARGIN_TOOLTIPS[key])
+            var = tk.StringVar()
+            self._margin_vars[key] = var
+            tk.Entry(
+                self,
+                textvariable=var,
+                width=44,
+                font=("Segoe UI", 9),
+            ).grid(row=row, column=1, sticky="ew", **pad)
+
+        sep_row = tuning_title_row + len(MARGIN_FIELDS) + 1
         tk.Frame(self, height=1, bg="#cccccc").grid(
             row=sep_row, column=0, columnspan=2, sticky="ew", padx=16, pady=10
         )
@@ -239,6 +397,15 @@ class SetupApp(tk.Tk):
                 val = DEFAULT_REPORTS_DIR
             var.set(val)
 
+        try:
+            margins = load_profile_margin_values()
+            self._append_log(f"Profile margins loaded from {BASE_PROFILE_PATH}")
+        except RuntimeError as exc:
+            margins = {}
+            self._append_log(str(exc))
+        for key, var in self._margin_vars.items():
+            var.set(margins.get(key, ""))
+
     def _browse_dir(self, var: tk.StringVar) -> None:
         initial = var.get().strip() or DEFAULT_REPORTS_DIR
         chosen = filedialog.askdirectory(
@@ -251,6 +418,16 @@ class SetupApp(tk.Tk):
 
     def _collect(self) -> dict[str, str]:
         return {key: var.get().strip() for key, var in self._vars.items()}
+
+    def _collect_margin_values(self) -> dict[str, float] | None:
+        try:
+            parsed = resolve_margin_values(
+                {key: var.get() for key, var in self._margin_vars.items()},
+            )
+            return parsed
+        except ValueError as exc:
+            messagebox.showerror("Margin không hợp lệ", str(exc))
+            return None
 
     def _validate(self, data: dict[str, str]) -> bool:
         missing = [
@@ -274,7 +451,15 @@ class SetupApp(tk.Tk):
         data = self._collect()
         if not self._validate(data):
             return
+        margins = self._collect_margin_values()
+        if margins is None:
+            return
         self._write_config(data)
+        try:
+            update_profile_margin_values(BASE_PROFILE_PATH, margins)
+        except Exception as exc:
+            messagebox.showerror("Không thể lưu cấu hình", str(exc))
+            return
         messagebox.showinfo("Đã lưu", "Cấu hình đã được lưu.")
 
     def _build_env(self, data: dict[str, str]) -> dict[str, str]:
@@ -289,7 +474,15 @@ class SetupApp(tk.Tk):
         data = self._collect()
         if not self._validate(data):
             return
+        margins = self._collect_margin_values()
+        if margins is None:
+            return
         self._write_config(data)
+        try:
+            update_profile_margin_values(BASE_PROFILE_PATH, margins)
+        except Exception as exc:
+            messagebox.showerror("Không thể khởi động", str(exc))
+            return
 
         env = self._build_env(data)
         os.environ.update(env)

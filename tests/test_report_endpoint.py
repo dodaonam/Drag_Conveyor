@@ -65,7 +65,9 @@ class ReportEndpointTests(unittest.TestCase):
                 out = main.save_report("job1", body)
             self.assertTrue(out["saved"])
             self.assertTrue(out["filename"].endswith(".pdf"))
+            self.assertTrue(out["excel_filename"].endswith(".xlsx"))
             self.assertTrue((Path(tmp) / "reports" / out["filename"]).exists())
+            self.assertTrue((Path(tmp) / "reports" / out["excel_filename"]).exists())
 
     def test_unclassified_returns_400(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

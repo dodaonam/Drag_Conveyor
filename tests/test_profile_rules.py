@@ -255,7 +255,7 @@ class ProfileRulesTests(unittest.TestCase):
             width_upper_percentile="p98",
         )
 
-        # length_min = p2(91); length_max = p98(109) * 1.15 = 125.35; deadband floor = 1.0
+        # length_min = p2(91); length_max = p98(109) * 1.09 = 118.81; deadband floor = 1.0
         normal = engine.evaluate({"length": 92.0, "width": 18.0}, rules, policy, calibration)
         short = engine.evaluate({"length": 85.0, "width": 18.0}, rules, policy, calibration)
         long = engine.evaluate({"length": 130.0, "width": 18.0}, rules, policy, calibration)
@@ -264,7 +264,7 @@ class ProfileRulesTests(unittest.TestCase):
         self.assertEqual(short.reasons, ["length_too_short"])
         self.assertEqual(long.reasons, ["length_too_long"])
         self.assertEqual(normal.thresholds["length_min"], 91.0)
-        self.assertEqual(normal.thresholds["length_max"], 125.35)
+        self.assertEqual(normal.thresholds["length_max"], 118.81)
         with self.assertRaisesRegex(ValueError, "missing percentile: p10"):
             engine.evaluate(
                 {"length": 100.0, "width": 20.0},

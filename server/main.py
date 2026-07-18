@@ -23,6 +23,7 @@ from path_bootstrap import ensure_repo_root_on_path, RUNTIME_DIR
 ensure_repo_root_on_path()
 
 import db
+import excel_log
 import r2
 import report
 import settings
@@ -371,9 +372,27 @@ def save_report(job_id: str, body: ReportIn) -> dict[str, Any]:
             reports_dir=settings.REPORTS_DIR,
             fetch_image=fetch_image,
         )
+        report_data = report.build_report_data(
+            summary,
+            [c.model_dump() for c in body.corrections],
+        )
+        excel_filename = excel_log.save_inspection_log(
+            report_data=report_data,
+            job_id=job_id,
+            inspected_at_iso=row["created_at"],
+            inspector_name=body.inspector_name,
+            conveyor_name=body.conveyor_name,
+            pdf_filename=filename,
+            reports_dir=settings.REPORTS_DIR,
+        )
     except report.ReportError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except excel_log.ExcelLogError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"PDF đã được lưu nhưng không thể cập nhật Excel: {exc}",
+        ) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Cannot write report: {exc}") from exc
 
-    return {"filename": filename, "saved": True}
+    return {"filename": filename, "excel_filename": excel_filename, "saved": True}

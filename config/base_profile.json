@@ -85,8 +85,8 @@
       "width_lower_percentile": "p1",
       "width_upper_percentile": "p95",
       "length_lower_margin": 0.0,
-      "length_upper_margin": 0.15,
-      "width_lower_margin": 0.15,
+      "length_upper_margin": 0.09,
+      "width_lower_margin": 0.09,
       "width_upper_margin": 0.0,
       "calibration": {
         "min_valid_records": 50,
