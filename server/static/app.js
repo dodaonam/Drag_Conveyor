@@ -8,6 +8,7 @@ const G = {
   jobId: null,
   putUrl: null,
   file: null,
+  localVideo: null,
   videoW: 0,
   videoH: 0,
   frameOk: false,
@@ -25,6 +26,10 @@ const G = {
   allNormals: [],
   activeDefectSubtab: null,
   runtimeConfig: null,
+  inspectionMode: 'auto_baseline',
+  reviewRevision: 0,
+  geometryLine: null, // two points normalized inside ROI: {top:{x,y}, bottom:{x,y}}
+  geometryDrag: null,
 };
 
 /* ── Session info ───────────────────────────────────────────────────────── */
@@ -72,6 +77,10 @@ async function api(path, opts = {}) {
 
 async function loadRuntimeConfig() {
   G.runtimeConfig = await api('/api/runtime-config');
+  if (G.runtimeConfig.local_mode) {
+    document.getElementById('btn-pick').style.display = 'none';
+    document.getElementById('btn-pick-local').textContent = 'Chọn video từ thư mục máy';
+  }
 }
 
 function getTriggerBandConfig() {
@@ -142,25 +151,56 @@ document.getElementById('btn-pick').addEventListener('click', () => {
 document.getElementById('inp-video').addEventListener('change', function () {
   const f = this.files[0];
   if (!f) return;
-  G.file = f; G.roi = null; G.frameOk = false; G.roiMode = 'locked';
+  selectVideo(URL.createObjectURL(f), f, null);
+});
+
+function selectVideo(url, file, localVideo) {
+  G.file = file; G.localVideo = localVideo; G.roi = null; G.geometryLine = null; G.frameOk = false; G.roiMode = 'locked';
   G.dragStart = null;
   canvas.classList.remove('editing');
   document.getElementById('roi-section').style.display = 'block';
   document.getElementById('video-name').style.display = 'block';
   document.getElementById('video-name').textContent =
-    f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)';
+    file.name + ' (' + (file.size / 1048576).toFixed(1) + ' MB)';
   document.getElementById('canvas-hint').textContent = 'Bấm Chọn vùng chụp để bắt đầu';
   updateRoiStatus();
   updateRoiControls();
 
-  const url = URL.createObjectURL(f);
   videoEl.addEventListener('seeked', onFrame, { once: true });
   videoEl.addEventListener('loadedmetadata', () => {
     videoEl.currentTime = Math.min(0.5, Math.max(0, (videoEl.duration || 1) - 0.05));
   }, { once: true });
   videoEl.src = url;
   videoEl.load();
-});
+}
+
+document.getElementById('btn-pick-local').addEventListener('click', () => openLocalBrowser(''));
+
+async function openLocalBrowser(path) {
+  try {
+    const data = await api('/api/local/videos?path=' + encodeURIComponent(path));
+    const panel = document.getElementById('local-browser');
+    panel.style.display = 'block';
+    const up = data.path ? `<button class="btn btn-outline btn-sm" onclick="openLocalBrowser(decodeURIComponent('${localArg(data.parent || '')}'))">↑ Thư mục cha</button>` : '';
+    const entries = data.entries.map(item => item.is_dir
+      ? `<button class="btn btn-outline btn-sm" onclick="openLocalBrowser(decodeURIComponent('${localArg(item.path)}'))">📁 ${esc(item.name)}</button>`
+      : `<button class="btn btn-outline btn-sm" onclick="selectLocalVideo(decodeURIComponent('${localArg(item.path)}'), decodeURIComponent('${localArg(item.name)}'), ${Number(item.size_bytes)}, decodeURIComponent('${localArg(item.content_type)}'))">🎬 ${esc(item.name)}</button>`
+    ).join(' ');
+    panel.innerHTML = `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">${esc(data.root_label)}${data.path ? ' / ' + esc(data.path) : ''}</div>${up}<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">${entries || '<span>Không có video</span>'}</div>`;
+  } catch (e) { setErr('err-setup', 'Không mở được thư mục local: ' + e.message); }
+}
+
+function localArg(value) {
+  return encodeURIComponent(String(value)).replace(/'/g, '%27');
+}
+
+async function selectLocalVideo(path, name, size, contentType) {
+  try {
+    const url = '/api/local/video?path=' + encodeURIComponent(path) + '&token=' + encodeURIComponent(G.token);
+    selectVideo(url, { name, size, type: contentType }, path);
+    document.getElementById('local-browser').style.display = 'none';
+  } catch (e) { setErr('err-setup', e.message); }
+}
 
 function onFrame() {
   G.videoW = videoEl.videoWidth;
@@ -196,6 +236,24 @@ function createDefaultRoi() {
     w: canvas.width * 0.80,
     h: canvas.height * 0.55,
   });
+}
+
+function ensureGeometryLine() {
+  if (!G.roi || G.geometryLine) return;
+  G.geometryLine = { top: { x: 0.5, y: 0.0 }, bottom: { x: 0.5, y: 1.0 } };
+}
+
+function isGeometryMode() {
+  return document.getElementById('inp-inspection-mode').value === 'geometry_v2';
+}
+
+function geometryCanvasPoints() {
+  ensureGeometryLine();
+  if (!G.roi || !G.geometryLine) return null;
+  return {
+    top: { x: G.roi.x + G.geometryLine.top.x * G.roi.w, y: G.roi.y + G.geometryLine.top.y * G.roi.h },
+    bottom: { x: G.roi.x + G.geometryLine.bottom.x * G.roi.w, y: G.roi.y + G.geometryLine.bottom.y * G.roi.h },
+  };
 }
 
 function isRoiValid() {
@@ -292,8 +350,14 @@ function applyRoiDrag(p) {
 }
 
 function onCanvasPointerStart(e) {
-  if (G.roiMode !== 'editing' || !G.frameOk || !G.roi) return;
+  if (!G.frameOk || !G.roi) return;
   const p = evXY(e);
+  if (isGeometryMode() && G.roiMode === 'locked') {
+    const points = geometryCanvasPoints();
+    const endpoint = points && (Math.hypot(p.x - points.top.x, p.y - points.top.y) <= HANDLE_SIZE ? 'top' : Math.hypot(p.x - points.bottom.x, p.y - points.bottom.y) <= HANDLE_SIZE ? 'bottom' : null);
+    if (endpoint) { e.preventDefault(); G.geometryDrag = endpoint; return; }
+  }
+  if (G.roiMode !== 'editing') return;
   const handle = hitTestRoiHandle(p);
   if (!handle) return;
   e.preventDefault();
@@ -301,6 +365,16 @@ function onCanvasPointerStart(e) {
 }
 
 function onCanvasPointerMove(e) {
+  if (G.geometryDrag && G.roi && isGeometryMode()) {
+    e.preventDefault();
+    const p = evXY(e);
+    G.geometryLine[G.geometryDrag] = {
+      x: Math.max(0, Math.min(1, (p.x - G.roi.x) / G.roi.w)),
+      y: Math.max(0, Math.min(1, (p.y - G.roi.y) / G.roi.h)),
+    };
+    redraw();
+    return;
+  }
   if (G.roiMode !== 'editing' || !G.dragStart) return;
   e.preventDefault();
   const p = evXY(e);
@@ -308,6 +382,7 @@ function onCanvasPointerMove(e) {
 }
 
 function onCanvasPointerEnd(e) {
+  if (G.geometryDrag) { e.preventDefault(); G.geometryDrag = null; return; }
   if (G.roiMode !== 'editing' || !G.dragStart) return;
   e.preventDefault();
   G.dragStart = null;
@@ -376,7 +451,7 @@ function redraw() {
   ctx.strokeRect(G.roi.x + 1, G.roi.y + 1, G.roi.w - 2, G.roi.h - 2);
 
   const bandConfig = getTriggerBandConfig();
-  if (bandConfig) {
+  if (bandConfig && !isGeometryMode()) {
     // Trigger band fill
     const cy = G.roi.y + G.roi.h * Number(bandConfig.position_ratio);
     const ht = G.roi.h * Number(bandConfig.thickness_ratio) / 2;
@@ -399,7 +474,48 @@ function redraw() {
     ctx.setLineDash([]);
   }
 
+  if (isGeometryMode()) drawGeometryPreview();
+
   if (G.roiMode === 'editing') drawRoiHandles();
+}
+
+function drawGeometryPreview() {
+  const points = geometryCanvasPoints();
+  if (!points) return;
+  const dx = points.bottom.x - points.top.x, dy = points.bottom.y - points.top.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1) return;
+  const d = { x: dx / length, y: dy / length }, h = { x: -d.y, y: d.x };
+  const geometry = G.runtimeConfig?.geometry_v2;
+  const bandWidth = G.roi.w * Number(geometry?.defaults?.chain_band_width_ratio || .05);
+  const offset = bandWidth / 2;
+  ctx.fillStyle = 'rgba(250,204,21,.15)';
+  ctx.beginPath();
+  ctx.moveTo(points.top.x + h.x * offset, points.top.y + h.y * offset);
+  ctx.lineTo(points.bottom.x + h.x * offset, points.bottom.y + h.y * offset);
+  ctx.lineTo(points.bottom.x - h.x * offset, points.bottom.y - h.y * offset);
+  ctx.lineTo(points.top.x - h.x * offset, points.top.y - h.y * offset);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#facc15'; ctx.lineWidth = 2.5; ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(points.top.x, points.top.y); ctx.lineTo(points.bottom.x, points.bottom.y); ctx.stroke();
+  for (const point of [points.top, points.bottom]) {
+    ctx.beginPath(); ctx.arc(point.x, point.y, 6, 0, Math.PI * 2); ctx.fillStyle = '#facc15'; ctx.fill();
+    ctx.strokeStyle = '#713f12'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  const trigger = geometry?.trigger;
+  if (trigger) {
+    const center = Number(trigger.center_ratio), thickness = Number(trigger.height_ratio);
+    const midpoint = { x: points.top.x + dx * center, y: points.top.y + dy * center };
+    const halfAlong = length * thickness / 2, halfAcross = Math.max(G.roi.w, G.roi.h) / 2;
+    ctx.fillStyle = 'rgba(34,211,238,.20)';
+    ctx.beginPath();
+    ctx.moveTo(midpoint.x - d.x * halfAlong + h.x * halfAcross, midpoint.y - d.y * halfAlong + h.y * halfAcross);
+    ctx.lineTo(midpoint.x + d.x * halfAlong + h.x * halfAcross, midpoint.y + d.y * halfAlong + h.y * halfAcross);
+    ctx.lineTo(midpoint.x + d.x * halfAlong - h.x * halfAcross, midpoint.y + d.y * halfAlong - h.y * halfAcross);
+    ctx.lineTo(midpoint.x - d.x * halfAlong - h.x * halfAcross, midpoint.y - d.y * halfAlong - h.y * halfAcross);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
 }
 
 function drawRoiHandles() {
@@ -450,6 +566,8 @@ document.getElementById('btn-submit').addEventListener('click', async () => {
   if (!G.file) { setErr('err-setup', 'Chưa chọn video'); return; }
   if (!G.roi || !isRoiValid()) { setErr('err-setup', 'Chưa chọn vùng kiểm tra, hoặc vùng quá nhỏ'); return; }
   if (G.roiMode !== 'locked') { setErr('err-setup', 'Vui lòng bấm ✓ để xác nhận vùng kiểm tra trước khi bắt đầu.'); return; }
+  const inspectionMode = document.getElementById('inp-inspection-mode').value;
+  if (inspectionMode === 'geometry_v2') ensureGeometryLine();
   G.conveyor = conveyor;
   updateSessionInfo();
 
@@ -471,16 +589,37 @@ document.getElementById('btn-submit').addEventListener('click', async () => {
     },
     inspector_name: G.inspector,
     conveyor_name: G.conveyor,
+    inspection_mode: inspectionMode,
   };
+  if (body.inspection_mode === 'geometry_v2') {
+    const geometry = G.runtimeConfig?.geometry_v2;
+    if (!geometry?.available) { setErr('err-setup', geometry?.unavailable_reason || 'Geometry V2 hiện không khả dụng'); return; }
+    body.geometry = {
+      schema_version: geometry.input_schema_version,
+      chain_centerline: {
+        top: { x: G.geometryLine.top.x * vRoi.w, y: G.geometryLine.top.y * vRoi.h },
+        bottom: { x: G.geometryLine.bottom.x * vRoi.w, y: G.geometryLine.bottom.y * vRoi.h },
+      },
+      chain_band_width_ratio: geometry.defaults.chain_band_width_ratio,
+      motion_direction: geometry.defaults.motion_direction,
+    };
+  }
 
   try {
-    const data = await api('/api/jobs', { method: 'POST', body: JSON.stringify(body) });
+    const data = await api(G.localVideo ? '/api/local/jobs' : '/api/jobs', { method: 'POST', body: JSON.stringify(G.localVideo ? { ...body, path: G.localVideo } : body) });
     G.jobId = data.job_id;
     G.putUrl = data.presigned_put_url;
-    doUpload(mime);
+    if (G.localVideo) startPolling(); else doUpload(mime);
   } catch (e) {
     if (e.status !== 401) setErr('err-setup', e.message);
   }
+});
+
+document.getElementById('inp-inspection-mode').addEventListener('change', () => {
+  const geometry = isGeometryMode();
+  document.getElementById('geometry-centerline-help').style.display = geometry ? 'block' : 'none';
+  if (geometry) ensureGeometryLine();
+  redraw();
 });
 
 /* ══════════════════════════════════════════════════════════════════
@@ -571,12 +710,16 @@ document.getElementById('btn-cancel-poll').addEventListener('click', () => {
 /* ══════════════════════════════════════════════════════════════════
    RESULT
 ═══════════════════════════════════════════════════════════════════ */
-const DEFECT_LABEL_KEYS = ['bent_left', 'bent_right', 'bent_both', 'broken', 'other', '_unclassified'];
+const DEFECT_LABEL_KEYS = ['bent_left', 'bent_right', 'bent_both', 'broken_left', 'broken_right', 'broken_center', 'broken', 'uncertain', 'other', '_unclassified'];
 const DEFECT_LABELS = {
   bent_left:     'Cong trái',
   bent_right:    'Cong phải',
   bent_both:     'Cong cả 2',
   broken:        'Gãy',
+  broken_left:   'Gãy bên trái',
+  broken_right:  'Gãy bên phải',
+  broken_center: 'Gãy giữa',
+  uncertain:     'Cần xem xét',
   other:         'Không xác định rõ',
   _unclassified: 'Chưa phân loại',
 };
@@ -587,8 +730,29 @@ const CALIB_REASONS = {
   width_too_large: 'Quá rộng',
 };
 
+function effectiveStatus(bar, normalBucket = false) {
+  return bar.final_reviewed_status || bar.vision_status || (normalBucket ? 'normal' : bar.defect_type || '_unclassified');
+}
+
+function geometryDiagnosticsHtml(bar) {
+  const analysis = bar.geometry_analysis;
+  const diagnostics = analysis && analysis.diagnostics;
+  if (!diagnostics) return '';
+  const angle = value => Number.isFinite(value) ? `${Number(value).toFixed(2)}°` : '—';
+  const machine = bar.vision_status || '—';
+  const reviewed = bar.final_reviewed_status || 'chưa review';
+  const states = [diagnostics.center_state, diagnostics.left_side_state, diagnostics.right_side_state]
+    .map(value => value || '—').join(' / ');
+  const reasons = Array.isArray(analysis.reason_codes) ? analysis.reason_codes.join(', ') : '—';
+  return `<div class="defect-dims" style="margin-top:5px;font-size:12px;color:var(--muted)">
+    Máy: ${esc(machine)} · Review: ${esc(reviewed)}<br>
+    Center / Trái / Phải: ${esc(states)} · Góc T/P: ${esc(angle(diagnostics.left_angle_deg))} / ${esc(angle(diagnostics.right_angle_deg))}<br>
+    Tilt/Kink: ${esc(angle(diagnostics.global_tilt_deg))} / ${esc(angle(diagnostics.center_kink_deg))} · Evidence: ${esc(reasons)}
+  </div>`;
+}
+
 function defectSubtabKey(d) {
-  return d.vlm_called && d.defect_type ? d.defect_type : '_unclassified';
+  return effectiveStatus(d);
 }
 
 async function loadResult() {
@@ -606,6 +770,7 @@ async function loadResult() {
   const normals = data.normals || [];
   G.allDefects = defects;
   G.allNormals = normals;
+  G.reviewRevision = Number(data.review?.revision || 0);
 
   G.lightboxIndex = -1;
 
@@ -644,20 +809,19 @@ function switchDefectSubtab(key) {
   const filtered = _filterBySubtab(G.allDefects, key);
   G.defectLightboxItems = filtered.filter(d => d.snapshot_url).map(d => ({
     src: d.snapshot_url,
-    meta: `${d.bar_id || ('Track #' + d.track_id)} · ${DEFECT_LABELS[d.defect_type] || ''}`,
+    meta: `${d.bar_id || ('Track #' + d.track_id)} · ${DEFECT_LABELS[effectiveStatus(d)] || ''}`,
   }));
   if (G.activeTab === 'defect') { G.lightboxItems = G.defectLightboxItems; G.lightboxIndex = -1; }
   let di = 0;
   document.getElementById('defect-list').innerHTML = filtered.map(d => {
     const idx = d.snapshot_url ? di++ : -1;
     const ekey = 'ed:' + esc(d.bar_id || String(d.track_id));
-    const vlmBadge = d.vlm_called
-      ? `<span class="tag tag-defect">${DEFECT_LABELS[d.defect_type] || esc(d.defect_type)}</span>`
-      : `<span class="tag" style="opacity:.6">Chưa phân loại</span>`;
+    const status = effectiveStatus(d);
+    const vlmBadge = `<span class="tag ${status === 'uncertain' ? '' : 'tag-defect'}" style="${status === 'uncertain' ? 'background:#f59e0b;color:#111827' : ''}">${DEFECT_LABELS[status] || esc(status)}</span>`;
     const calibBadges = (d.reasons || []).map(r =>
       `<span class="tag" style="font-size:11px;opacity:.7">${CALIB_REASONS[r] || esc(r)}</span>`
     ).join('');
-    const editOptions = ['bent_left','bent_right','bent_both','broken','other'].map(k =>
+    const editOptions = ['bent_left','bent_right','bent_both','broken_left','broken_right','broken_center','broken','other'].map(k =>
       `<button class="edit-type-btn" onclick="applyCorrection('d:${esc(d.bar_id||String(d.track_id))}','${k}')">${DEFECT_LABELS[k]}</button>`
     ).join('') + `<button class="edit-type-btn ok-btn" onclick="applyCorrection('d:${esc(d.bar_id||String(d.track_id))}','normal')">Bình thường</button>`;
     return `
@@ -667,7 +831,8 @@ function switchDefectSubtab(key) {
       : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
     <div class="defect-info">
       <div class="defect-tags">${vlmBadge}${calibBadges}<button class="btn-edit-toggle" onclick="toggleCardEdit('${ekey}')">✏ Sửa</button></div>
-      <div class="defect-dims">${esc(d.bar_id || ('Track #' + d.track_id))} &nbsp;·&nbsp; Dài: ${(d.length || 0).toFixed(1)} &nbsp;·&nbsp; Rộng: ${(d.width || 0).toFixed(1)}</div>
+      <div class="defect-dims">${esc(d.bar_id || ('Track #' + d.track_id))} &nbsp;·&nbsp; Dài: ${d.legacy_measurements_available === false ? '—' : (d.length || 0).toFixed(1)} &nbsp;·&nbsp; Rộng: ${d.legacy_measurements_available === false ? '—' : (d.width || 0).toFixed(1)}</div>
+      ${geometryDiagnosticsHtml(d)}
       <div class="card-edit-panel" id="${ekey}" style="display:none">${editOptions}</div>
     </div>
   </div>`;
@@ -679,7 +844,7 @@ function _renderNormals() {
   document.getElementById('normal-list').innerHTML = G.allNormals.map(n => {
     const idx = n.snapshot_url ? ni++ : -1;
     const ekey = 'en:' + n.track_id;
-    const editOptions = ['bent_left','bent_right','bent_both','broken','other'].map(k =>
+    const editOptions = ['bent_left','bent_right','bent_both','broken_left','broken_right','broken_center','broken','other'].map(k =>
       `<button class="edit-type-btn" onclick="applyCorrection('n:${n.track_id}','${k}')">${DEFECT_LABELS[k]}</button>`
     ).join('');
     return `
@@ -689,7 +854,8 @@ function _renderNormals() {
         : `<div style="background:#1e293b;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:13px">Không có ảnh</div>`}
     <div class="defect-info">
       <div class="defect-tags"><button class="btn-edit-toggle" onclick="toggleCardEdit('${ekey}')">✏ Sửa lỗi</button></div>
-      <div class="defect-dims">Track #${n.track_id} &nbsp;·&nbsp; Dài: ${(n.length || 0).toFixed(1)} &nbsp;·&nbsp; Rộng: ${(n.width || 0).toFixed(1)}</div>
+      <div class="defect-dims">Track #${n.track_id} &nbsp;·&nbsp; Dài: ${n.legacy_measurements_available === false ? '—' : (n.length || 0).toFixed(1)} &nbsp;·&nbsp; Rộng: ${n.legacy_measurements_available === false ? '—' : (n.width || 0).toFixed(1)}</div>
+      ${geometryDiagnosticsHtml(n)}
       <div class="card-edit-panel" id="${ekey}" style="display:none">${editOptions}</div>
     </div>
   </div>`;
@@ -712,9 +878,9 @@ function applyCorrection(key, newType) {
     const bar = G.allDefects[idx];
     if (newType === 'normal') {
       G.allDefects.splice(idx, 1);
-      G.allNormals.push({ track_id: bar.track_id, frame_id: bar.frame_id, length: bar.length, width: bar.width, snapshot_key: bar.snapshot_key, snapshot_url: bar.snapshot_url });
+      G.allNormals.push({ ...bar, final_reviewed_status: 'normal' });
     } else {
-      G.allDefects[idx] = { ...bar, defect_type: newType, vlm_called: true };
+      G.allDefects[idx] = { ...bar, final_reviewed_status: newType };
     }
   } else {
     const trackId = parseInt(id);
@@ -722,8 +888,7 @@ function applyCorrection(key, newType) {
     if (idx === -1) return;
     const bar = G.allNormals[idx];
     G.allNormals.splice(idx, 1);
-    const newBarId = 'track_' + String(trackId).padStart(6, '0');
-    G.allDefects.push({ bar_id: newBarId, track_id: trackId, frame_id: bar.frame_id, reasons: [], defect_type: newType, vlm_called: true, length: bar.length, width: bar.width, snapshot_key: bar.snapshot_key, snapshot_url: bar.snapshot_url });
+    G.allDefects.push({ ...bar, final_reviewed_status: newType });
   }
 
   const defectCount = G.allDefects.length;
@@ -741,17 +906,17 @@ function applyCorrection(key, newType) {
   _renderNormals();
 }
 
-const VALID_DEFECT_TYPES = ['bent_left', 'bent_right', 'bent_both', 'broken'];
+const VALID_DEFECT_TYPES = ['normal', 'bent_left', 'bent_right', 'bent_both', 'broken_left', 'broken_right', 'broken_center', 'broken'];
 
 function collectCorrections() {
   const out = [];
-  for (const d of G.allDefects) out.push({ track_id: d.track_id, defect_type: d.defect_type });
-  for (const n of G.allNormals) out.push({ track_id: n.track_id, defect_type: 'normal' });
+  for (const d of G.allDefects) out.push({ track_id: d.track_id, defect_type: effectiveStatus(d) });
+  for (const n of G.allNormals) out.push({ track_id: n.track_id, defect_type: effectiveStatus(n, true) });
   return out;
 }
 
 function hasUnclassified() {
-  return G.allDefects.some(d => !VALID_DEFECT_TYPES.includes(d.defect_type));
+  return G.allDefects.some(d => !VALID_DEFECT_TYPES.includes(effectiveStatus(d)));
 }
 
 function setSaveMsg(text, isErr) {
@@ -785,6 +950,7 @@ async function saveReport() {
       body: JSON.stringify({
         inspector_name: G.inspector,
         conveyor_name: G.conveyor,
+        expected_review_revision: G.reviewRevision,
         corrections: collectCorrections(),
       }),
     });
@@ -840,7 +1006,7 @@ function statBox(n, lbl, cls) {
 }
 
 document.getElementById('btn-new-job').addEventListener('click', () => {
-  G.jobId = null; G.putUrl = null; G.file = null;
+  G.jobId = null; G.putUrl = null; G.file = null; G.localVideo = null;
   G.roi = null; G.frameOk = false; G.roiMode = 'locked';
   G.dragStart = null;
   G.conveyor = '';

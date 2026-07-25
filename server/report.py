@@ -26,7 +26,10 @@ _BRANCH = "Chi nhánh Xuân Mai – Hà Nội"
 _DEPARTMENT = "Phòng Kỹ Thuật"
 
 ALLOWED_DEFECT_TYPES: tuple[str, ...] = ("bent_left", "bent_right", "bent_both", "broken")
-ALLOWED_CORRECTION_TYPES: tuple[str, ...] = ALLOWED_DEFECT_TYPES + ("normal",)
+CANONICAL_STATUSES: tuple[str, ...] = (
+    "normal", "bent_left", "bent_right", "bent_both", "broken_left", "broken_right", "broken_center",
+)
+ALLOWED_CORRECTION_TYPES: tuple[str, ...] = CANONICAL_STATUSES + ("broken",)
 
 
 class ReportError(Exception):
@@ -40,11 +43,11 @@ def build_report_data(summary: dict, corrections: list[dict]) -> dict:
     for bar in summary.get("defects", []):
         tid = int(bar["track_id"])
         bars_by_track[tid] = bar
-        final_type[tid] = bar.get("defect_type") or "_unclassified"
+        final_type[tid] = bar.get("final_reviewed_status") or bar.get("vision_status") or bar.get("defect_type") or "_unclassified"
     for bar in summary.get("normals", []):
         tid = int(bar["track_id"])
         bars_by_track[tid] = bar
-        final_type[tid] = "normal"
+        final_type[tid] = bar.get("final_reviewed_status") or bar.get("vision_status") or "normal"
 
     for corr in corrections:
         tid = int(corr["track_id"])
@@ -56,12 +59,18 @@ def build_report_data(summary: dict, corrections: list[dict]) -> dict:
         final_type[tid] = ctype
 
     defects_by_type: dict[str, list[dict]] = {t: [] for t in ALLOWED_DEFECT_TYPES}
+    resolved_statuses: dict[int, str] = {}
     for tid, ftype in final_type.items():
+        if ftype == "uncertain":
+            raise ReportError(f"bar track {tid} is still unclassified (uncertain)")
         if ftype == "normal":
+            resolved_statuses[tid] = ftype
             continue
-        if ftype not in ALLOWED_DEFECT_TYPES:
+        report_type = "broken" if ftype in {"broken_left", "broken_right", "broken_center"} else ftype
+        if report_type not in ALLOWED_DEFECT_TYPES:
             raise ReportError(f"bar track {tid} is still unclassified ({ftype})")
-        defects_by_type[ftype].append(bars_by_track[tid])
+        defects_by_type[report_type].append(bars_by_track[tid])
+        resolved_statuses[tid] = ftype
 
     defect_count = sum(len(v) for v in defects_by_type.values())
     total_bars = int(summary.get("total_bars", len(bars_by_track)))
@@ -72,6 +81,7 @@ def build_report_data(summary: dict, corrections: list[dict]) -> dict:
         "defect_count": defect_count,
         "defect_rate": defect_rate,
         "defects_by_type": defects_by_type,
+        "resolved_statuses": resolved_statuses,
     }
 
 

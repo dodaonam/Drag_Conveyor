@@ -80,7 +80,7 @@ class YoloSegPostprocessor:
         if decoded is None:
             return []
 
-        boxes_model, class_ids, scores, mask_coeff = decoded
+        boxes_model, class_ids, scores, mask_coeff, model_output_row_indices = decoded
         if boxes_model.shape[0] == 0:
             return []
 
@@ -91,6 +91,7 @@ class YoloSegPostprocessor:
             class_ids = class_ids[keep_cls]
             scores = scores[keep_cls]
             mask_coeff = mask_coeff[keep_cls]
+            model_output_row_indices = model_output_row_indices[keep_cls]
             if boxes_model.shape[0] == 0:
                 return []
 
@@ -99,6 +100,7 @@ class YoloSegPostprocessor:
         class_ids = class_ids[keep_nms]
         scores = scores[keep_nms]
         mask_coeff = mask_coeff[keep_nms]
+        model_output_row_indices = model_output_row_indices[keep_nms]
 
         proto_flat = proto.reshape(proto_channels, -1)
         roi_h, roi_w = preprocess.roi_shape
@@ -125,9 +127,11 @@ class YoloSegPostprocessor:
             mask_roi_prob = _undo_letterbox_mask(mask_input, preprocess)
             mask_roi = (mask_roi_prob >= postprocess_config.mask_threshold).astype(np.uint8)
 
-            x1r, y1r, x2r, y2r = _model_box_to_roi_xyxy(box_model, preprocess)
+            model_bbox_roi_xyxy = _model_box_to_roi_xyxy(box_model, preprocess)
+            x1r, y1r, x2r, y2r = model_bbox_roi_xyxy
+            model_bbox_crop_roi_xyxy = (int(x1r), int(y1r), int(x2r), int(y2r))
             if postprocess_config.crop_mask_to_bbox:
-                x1i, y1i, x2i, y2i = int(x1r), int(y1r), int(x2r), int(y2r)
+                x1i, y1i, x2i, y2i = model_bbox_crop_roi_xyxy
                 bbox_mask = np.zeros_like(mask_roi)
                 bbox_mask[y1i:y2i, x1i:x2i] = mask_roi[y1i:y2i, x1i:x2i]
                 mask_roi = bbox_mask
@@ -180,6 +184,9 @@ class YoloSegPostprocessor:
                     centroid_frame_xy=(cx + roi_x, cy + roi_y),
                     mask_roi=mask_roi,
                     contour_frame=contour_frame,
+                    model_bbox_roi_xyxy=model_bbox_roi_xyxy,
+                    model_bbox_crop_roi_xyxy=model_bbox_crop_roi_xyxy,
+                    model_output_row_index=int(model_output_row_indices[i]),
                 )
             )
 
@@ -191,7 +198,7 @@ class YoloSegPostprocessor:
         raw: np.ndarray,
         output_format: OutputFormatLike,
         conf_threshold: float,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
         feature_dim = raw.shape[1]
         expected_feature_dim = _expected_feature_dim(output_format)
         if feature_dim != expected_feature_dim:
@@ -244,6 +251,7 @@ class YoloSegPostprocessor:
             class_ids[keep],
             scores[keep],
             mask_coeff[keep],
+            np.nonzero(keep)[0].astype(np.int64),
         )
 
 

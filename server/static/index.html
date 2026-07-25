@@ -59,12 +59,20 @@
             <input type="text" id="inp-conveyor" placeholder="Nhập tên băng / máy" autocomplete="off">
           </div>
 
+          <div class="card">
+            <label class="lbl" for="inp-inspection-mode">Chế độ kiểm tra</label>
+            <select id="inp-inspection-mode"><option value="auto_baseline">Legacy auto baseline</option><option value="average_ratio">Legacy average ratio</option><option value="geometry_v2">Geometry V2 (cần xác nhận đường tâm xích)</option></select>
+            <div id="geometry-centerline-help" style="display:none;margin-top:8px;font-size:13px;color:var(--muted)">Geometry V2: kéo hai nút vàng trên ROI để xác nhận đường tâm xích.</div>
+          </div>
+
           <!-- Video picker -->
           <div class="card">
             <label class="lbl">Video băng tải</label>
             <input type="file" id="inp-video" accept="video/*" style="display:none">
             <button class="btn btn-outline" id="btn-pick">Chọn video</button>
+            <button class="btn btn-outline" id="btn-pick-local" type="button">Chọn từ thư mục máy</button>
             <div id="video-name" style="font-size:13px;color:var(--muted);margin-top:8px;display:none"></div>
+            <div id="local-browser" class="card" style="display:none;margin-top:10px;padding:10px"></div>
           </div>
 
         </div>

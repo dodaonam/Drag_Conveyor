@@ -44,6 +44,36 @@ def _load_server_modules(temp_dir: Path):
 
 
 class ServerWorkerTests(unittest.TestCase):
+    def test_result_serializer_accepts_tuple_as_json_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            _, worker, _ = _load_server_modules(Path(tmp))
+            worker._assert_plain_finite_json({"source_frame_ids": (12, 13)})
+
+    def test_local_video_browser_stays_inside_configured_root_and_creates_uploaded_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            db, worker, main = _load_server_modules(tmp_path)
+            media_root = tmp_path / "media"
+            media_root.mkdir()
+            source = media_root / "XT015.mp4"
+            source.write_bytes(b"video")
+            main.settings.LOCAL_MEDIA_ROOT = media_root
+            listing = main.list_local_videos()
+            self.assertEqual(listing["entries"][0]["path"], "XT015.mp4")
+            with self.assertRaises(Exception):
+                main._local_media_path("../outside.mp4")
+            body = main.LocalJobIn.model_validate({
+                "path": "XT015.mp4", "content_type": "video/mp4", "size_bytes": 1,
+                "roi": {"x": 0, "y": 0, "w": 10, "h": 10, "frame_width": 10, "frame_height": 10},
+                "inspector_name": "tester", "conveyor_name": "line", "inspection_mode": "auto_baseline",
+            })
+            with mock.patch.object(worker, "wake") as wake:
+                created = main.create_local_job(body)
+            row = db.get_job(created.job_id)
+            self.assertEqual(row["status"], "uploaded")
+            self.assertEqual(row["object_key"], f"local:{source.resolve()}")
+            wake.assert_called_once()
+
     def test_roi_validation_rejects_negative_or_out_of_bounds_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             _, _, main = _load_server_modules(Path(tmp))
@@ -169,6 +199,24 @@ class ServerWorkerTests(unittest.TestCase):
             self.assertIsNone(default_body.inspection_mode)
             self.assertEqual(average_mode_body.inspection_mode, "average_ratio")
             self.assertEqual(auto_baseline_body.inspection_mode, "auto_baseline")
+
+    def test_geometry_mode_requires_and_persists_geometry_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, _, main = _load_server_modules(Path(tmp))
+            payload = {
+                "content_type": "video/mp4", "size_bytes": 123,
+                "roi": {"x": 1, "y": 2, "w": 200, "h": 180, "frame_width": 320, "frame_height": 240},
+                "inspector_name": "nguyen", "conveyor_name": "line1", "inspection_mode": "geometry_v2",
+            }
+            with self.assertRaises(ValidationError):
+                main.CreateJobIn.model_validate(payload)
+            body = main.CreateJobIn.model_validate({**payload, "geometry": {"schema_version": "geometry_input/2.0", "chain_centerline": {"top": {"x": 100, "y": 0}, "bottom": {"x": 100, "y": 180}}}})
+            with mock.patch.object(main.r2, "presigned_put_url", return_value="https://example.invalid/upload"):
+                result = main.create_job(body)
+            row = db.get_job(result.job_id)
+            assert row is not None
+            self.assertEqual(row["inspection_mode"], "geometry_v2")
+            self.assertIn('"geometry"', row["roi_config_json"])
 
     def test_runtime_config_exposes_profile_trigger_band(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

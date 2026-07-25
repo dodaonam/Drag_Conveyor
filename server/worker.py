@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 import threading
 import time
@@ -47,12 +48,26 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
             "reasons": bar.reasons,
             "rule_result": bar.rule_result or bar.result,
             "defect_type": bar.defect_type,
+            "score": bar.score,
             "vlm_called": bar.vlm_called,
             "length": bar.measurements.get("length", 0.0),
             "width": bar.measurements.get("width", 0.0),
             "thresholds": bar.thresholds,
             "margins": bar.margins,
             "snapshot_key": snap_key,
+            "paddle_id": bar.paddle_id,
+            "track_ids": list(bar.track_ids),
+            "vision_status": bar.vision_status,
+            "final_reviewed_status": bar.final_reviewed_status,
+            "classification_source": bar.classification_source,
+            "decision_confidence": bar.decision_confidence,
+            "evidence_support_score": bar.evidence_support_score,
+            "suspected_breakage": bar.suspected_breakage,
+            "possible_breakage_statuses": list(bar.possible_breakage_statuses),
+            "review_required": bar.review_required,
+            "geometry_analysis": bar.geometry_analysis,
+            "snapshot_metadata": bar.snapshot_metadata,
+            "legacy_measurements_available": bar.legacy_measurements_available,
         })
     normals = []
     for bar in result.bars:
@@ -67,14 +82,28 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
             "reasons": bar.reasons,
             "rule_result": bar.rule_result or bar.result,
             "defect_type": bar.defect_type,
+            "score": bar.score,
             "vlm_called": bar.vlm_called,
             "length": bar.measurements.get("length", 0.0),
             "width": bar.measurements.get("width", 0.0),
             "thresholds": bar.thresholds,
             "margins": bar.margins,
             "snapshot_key": snap_key,
+            "paddle_id": bar.paddle_id,
+            "track_ids": list(bar.track_ids),
+            "vision_status": bar.vision_status,
+            "final_reviewed_status": bar.final_reviewed_status,
+            "classification_source": bar.classification_source,
+            "decision_confidence": bar.decision_confidence,
+            "evidence_support_score": bar.evidence_support_score,
+            "suspected_breakage": bar.suspected_breakage,
+            "possible_breakage_statuses": list(bar.possible_breakage_statuses),
+            "review_required": bar.review_required,
+            "geometry_analysis": bar.geometry_analysis,
+            "snapshot_metadata": bar.snapshot_metadata,
+            "legacy_measurements_available": bar.legacy_measurements_available,
         })
-    return {
+    summary = {
         "total_bars": result.total_bars,
         "normal_bars": result.normal_bars,
         "defect_bars": result.defect_bars,
@@ -83,10 +112,49 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
         "outlier_count": result.outlier_count,
         "inlier_ratio": result.inlier_ratio,
         "vlm_request_count": result.vlm_request_count,
+        "inspection_mode": result.inspection_mode,
+        "paddle_schema_version": result.paddle_schema_version,
+        "summary_schema_version": result.summary_schema_version,
+        "rule_version": result.rule_version,
+        "confirmed_defect_bars": result.confirmed_defect_bars,
+        "uncertain_bars": result.uncertain_bars,
+        "review_required_bars": result.review_required_bars,
+        "status_counts": result.status_counts,
+        "geometry_diagnostics": result.geometry_diagnostics,
+        "model_metadata": result.model_metadata,
+        "geometry_metadata": result.geometry_metadata,
+        "capability_metadata": result.capability_metadata,
+        "timestamp_source": result.timestamp_source,
+        "count_certified": result.success,
+        "possible_event_count_min": result.total_bars if result.success else None,
+        "possible_event_count_max": result.total_bars if result.success else None,
+        "report_export_allowed": result.success,
         "failure_reason": result.failure_reason,
         "defects": defects,
         "normals": normals,
     }
+    _assert_plain_finite_json(summary)
+    return summary
+
+
+def _assert_plain_finite_json(value: object, path: str = "$") -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"result_serialization_failed: non-finite number at {path}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_plain_finite_json(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"result_serialization_failed: non-string key at {path}")
+            _assert_plain_finite_json(item, f"{path}.{key}")
+        return
+    raise ValueError(f"result_serialization_failed: unsupported type at {path}")
 
 
 # ── Job processor ─────────────────────────────────────────────────────────────
@@ -105,11 +173,22 @@ def _process_job(job_id: str) -> None:
     temp_job_dir = settings.TEMP_DIR / job_id
 
     try:
-        # 1. Download video from R2
-        ext = Path(row["object_key"]).suffix  # .mp4 / .webm / .mov
-        video_path = temp_job_dir / f"input{ext}"
-        LOGGER.info("[%s] Downloading %s", job_id, row["object_key"])
-        r2.download_file(row["object_key"], video_path)
+        # 1. Source video: direct local path for Local Runner, R2 otherwise.
+        is_local_source = str(row["object_key"]).startswith("local:")
+        if is_local_source:
+            video_path = Path(str(row["object_key"])[len("local:"):])
+            try:
+                video_path.resolve().relative_to(settings.LOCAL_MEDIA_ROOT)
+            except ValueError as exc:
+                raise RuntimeError("Local video is outside LOCAL_MEDIA_ROOT") from exc
+            if not video_path.is_file():
+                raise RuntimeError("Local video no longer exists")
+            LOGGER.info("[%s] Using local video %s", job_id, video_path)
+        else:
+            ext = Path(row["object_key"]).suffix  # .mp4 / .webm / .mov
+            video_path = temp_job_dir / f"input{ext}"
+            LOGGER.info("[%s] Downloading %s", job_id, row["object_key"])
+            r2.download_file(row["object_key"], video_path)
 
         # 2. Validate video is readable
         cap = cv2.VideoCapture(str(video_path))
@@ -124,7 +203,8 @@ def _process_job(job_id: str) -> None:
         #     original video if preprocessing fails for any reason.
         db.update_status(job_id, "processing", db.now())
         inference_source = video_path
-        if preprocess.SLOWDOWN_FACTOR < 1.0:
+        inspection_mode = str(row["inspection_mode"] or "auto_baseline")
+        if inspection_mode != "geometry_v2" and preprocess.SLOWDOWN_FACTOR < 1.0:
             try:
                 slow_path = temp_job_dir / "slowmo.mp4"
                 preprocess.slow_down_video(video_path, slow_path)
@@ -137,6 +217,7 @@ def _process_job(job_id: str) -> None:
         # 3. Load base profile and apply client ROI
         profile = load_profile(settings.BASE_PROFILE_PATH)
         inspection_mode = str(row["inspection_mode"] or profile.inspection.mode)
+        geometry_input = roi_config.pop("geometry", None)
         profile = profile.with_roi(roi_config)
 
         # 4. Run batch inspection
@@ -147,6 +228,7 @@ def _process_job(job_id: str) -> None:
             run_id=job_id,
             snapshots_root=temp_job_dir / "snapshots",
             inspection_mode=inspection_mode,
+            geometry_input=geometry_input,
         )
         LOGGER.info(
             "[%s] Inspection done: success=%s, total=%d, defects=%d",
@@ -157,17 +239,19 @@ def _process_job(job_id: str) -> None:
         defect_keys: list[str] = []
         if result.defect_snapshots_dir and result.defect_snapshots_dir.exists():
             for img in sorted(result.defect_snapshots_dir.glob("*.jpg")):
-                key = f"results/{job_id}/snapshots/defects/{img.name}"
-                r2.upload_file(img, key, "image/jpeg")
+                key = f"local:{img.resolve()}" if is_local_source else f"results/{job_id}/snapshots/defects/{img.name}"
+                if not is_local_source:
+                    r2.upload_file(img, key, "image/jpeg")
                 defect_keys.append(key)
-            LOGGER.info("[%s] Defect snapshots uploaded: %d", job_id, len(defect_keys))
+            LOGGER.info("[%s] Defect snapshots ready: %d", job_id, len(defect_keys))
         normal_keys: list[str] = []
         if result.normal_snapshots_dir and result.normal_snapshots_dir.exists():
             for img in sorted(result.normal_snapshots_dir.glob("*.jpg")):
-                key = f"results/{job_id}/snapshots/normals/{img.name}"
-                r2.upload_file(img, key, "image/jpeg")
+                key = f"local:{img.resolve()}" if is_local_source else f"results/{job_id}/snapshots/normals/{img.name}"
+                if not is_local_source:
+                    r2.upload_file(img, key, "image/jpeg")
                 normal_keys.append(key)
-            LOGGER.info("[%s] Normal snapshots uploaded: %d", job_id, len(normal_keys))
+            LOGGER.info("[%s] Normal snapshots ready: %d", job_id, len(normal_keys))
 
         # 6. Save summary + mark completed (or failed if inspection itself failed)
         summary = _build_summary(result, defect_keys, normal_keys)
@@ -179,14 +263,15 @@ def _process_job(job_id: str) -> None:
         )
 
         # 7. Cleanup — only after SQLite write confirmed
-        if settings.DELETE_VIDEO_AFTER_SUCCESS and result.success:
+        if settings.DELETE_VIDEO_AFTER_SUCCESS and result.success and not is_local_source:
             try:
                 r2.delete_object(row["object_key"])
                 LOGGER.info("[%s] Video deleted from R2", job_id)
             except Exception as exc:
                 LOGGER.warning("[%s] Could not delete video from R2: %s", job_id, exc)
 
-        shutil.rmtree(temp_job_dir, ignore_errors=True)
+        if not is_local_source:
+            shutil.rmtree(temp_job_dir, ignore_errors=True)
         LOGGER.info("[%s] Done", job_id)
 
     except Exception as exc:

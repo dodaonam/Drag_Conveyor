@@ -92,6 +92,25 @@ class ReportEndpointTests(unittest.TestCase):
                 main.save_report("job1", body)
             self.assertEqual(ctx.exception.status_code, 409)
 
+    def test_geometry_review_persists_canonical_status_without_overwriting_machine_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db, settings, main = _load(Path(tmp))
+            summary = {
+                "inspection_mode": "geometry_v2", "report_export_allowed": True, "total_bars": 1,
+                "defects": [{"track_id": 1, "vision_status": "uncertain", "defect_type": None, "snapshot_key": "results/job1/d/a.jpg"}],
+                "normals": [],
+            }
+            _seed_completed_job(db, summary=summary)
+            body = main.ReportIn.model_validate({"inspector_name": "A", "conveyor_name": "B", "expected_review_revision": 0, "corrections": [{"track_id": 1, "defect_type": "broken_center"}]})
+            with mock.patch.object(main.r2, "download_bytes", return_value=b"img"), \
+                 mock.patch.object(main.report, "render_pdf", return_value=b"%PDF fake"):
+                output = main.save_report("job1", body)
+            self.assertTrue(output["saved"])
+            saved = json.loads(db.get_job("job1")["result_summary_json"])
+            self.assertEqual(saved["defects"][0]["vision_status"], "uncertain")
+            self.assertEqual(saved["defects"][0]["final_reviewed_status"], "broken_center")
+            self.assertEqual(saved["review"]["revision"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

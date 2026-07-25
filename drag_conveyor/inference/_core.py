@@ -45,6 +45,9 @@ class Detection:
     centroid_frame_xy: tuple[float, float]
     mask_roi: np.ndarray
     contour_frame: np.ndarray
+    model_bbox_roi_xyxy: tuple[float, float, float, float] | None = None
+    model_bbox_crop_roi_xyxy: tuple[int, int, int, int] | None = None
+    model_output_row_index: int | None = None
 
 
 class OnnxRuntimeEngine:

@@ -23,17 +23,19 @@ def _endpoint(key: str) -> str:
     return raw.rstrip("/")
 
 
-R2_ENDPOINT_URL = _endpoint("R2_ENDPOINT_URL")
-R2_ACCESS_KEY_ID = _req("R2_ACCESS_KEY_ID")
-R2_SECRET_ACCESS_KEY = _req("R2_SECRET_ACCESS_KEY")
-R2_BUCKET_NAME = _req("R2_BUCKET_NAME")
+LOCAL_MODE = os.environ.get("LOCAL_MODE", "false").strip().lower() in {"1", "true", "yes"}
+R2_ENDPOINT_URL = "" if LOCAL_MODE else _endpoint("R2_ENDPOINT_URL")
+R2_ACCESS_KEY_ID = "" if LOCAL_MODE else _req("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = "" if LOCAL_MODE else _req("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = "" if LOCAL_MODE else _req("R2_BUCKET_NAME")
 
-API_AUTH_TOKEN = _req("API_AUTH_TOKEN")
+API_AUTH_TOKEN = os.environ.get("API_AUTH_TOKEN", "local-dev" if LOCAL_MODE else "").strip() or _req("API_AUTH_TOKEN")
 
 _SERVER_DIR = Path(__file__).parent
 
 BASE_PROFILE_PATH = (_SERVER_DIR / os.environ.get("BASE_PROFILE_PATH", "../config/base_profile.json")).resolve()
 TEMP_DIR = Path(os.environ.get("TEMP_DIR", str(RUNTIME_DIR / "temp"))).resolve()
+LOCAL_MEDIA_ROOT = Path(os.environ.get("LOCAL_MEDIA_ROOT", str(Path.home() / "Downloads"))).resolve()
 
 MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 209_715_200))
 MAX_JOB_DURATION_SECONDS: int = int(os.environ.get("MAX_JOB_DURATION_SECONDS", 900))

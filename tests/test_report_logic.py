@@ -63,5 +63,25 @@ class ReportLogicTests(unittest.TestCase):
             report.build_report_data(_summary(), corrections=[{"track_id": 999, "defect_type": "broken"}])
 
 
+class GeometryV2ReportLogicTests(unittest.TestCase):
+    def test_broken_location_uses_legacy_broken_report_group(self) -> None:
+        summary = {
+            "total_bars": 1,
+            "inspection_mode": "geometry_v2",
+            "defects": [{"track_id": 7, "vision_status": "broken_center"}],
+            "normals": [],
+        }
+        data = report.build_report_data(summary, corrections=[])
+        self.assertEqual(len(data["defects_by_type"]["broken"]), 1)
+        self.assertEqual(data["resolved_statuses"], {7: "broken_center"})
+
+    def test_uncertain_requires_human_correction_before_export(self) -> None:
+        summary = {"total_bars": 1, "defects": [{"track_id": 7, "vision_status": "uncertain"}], "normals": []}
+        with self.assertRaisesRegex(report.ReportError, "still unclassified"):
+            report.build_report_data(summary, corrections=[])
+        data = report.build_report_data(summary, corrections=[{"track_id": 7, "defect_type": "broken_center"}])
+        self.assertEqual(data["resolved_statuses"], {7: "broken_center"})
+
+
 if __name__ == "__main__":
     unittest.main()

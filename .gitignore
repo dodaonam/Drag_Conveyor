@@ -226,6 +226,7 @@ server/jobs.db
 
 .claude/
 docs/
+data/annotation_packs/
 .gitnexus
 NOTE.md
 config/app_settings.json

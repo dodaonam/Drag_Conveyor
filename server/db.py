@@ -142,6 +142,54 @@ def save_result(
         )
 
 
+def save_review_revision(
+    *,
+    job_id: str,
+    expected_revision: int,
+    reviewed_statuses: dict[int, str],
+    reviewer: str,
+    pdf_filename: str,
+    excel_filename: str,
+    now: str,
+) -> bool:
+    """CAS-persist human review without altering the immutable machine verdict."""
+    with _conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT result_summary_json FROM jobs WHERE job_id=? AND status='completed'", (job_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        summary = json.loads(row["result_summary_json"])
+        review = summary.get("review", {})
+        if int(review.get("revision", 0)) != expected_revision:
+            return False
+        updated = 0
+        for bucket in ("defects", "normals"):
+            for bar in summary.get(bucket, []):
+                track_id = int(bar["track_id"])
+                if track_id in reviewed_statuses:
+                    bar["final_reviewed_status"] = reviewed_statuses[track_id]
+                    updated += 1
+        if updated != len(reviewed_statuses):
+            return False
+        entry = {
+            "revision": expected_revision + 1,
+            "reviewer": reviewer,
+            "reviewed_at": now,
+            "final_statuses": {str(track_id): status for track_id, status in sorted(reviewed_statuses.items())},
+            "pdf_filename": pdf_filename,
+            "excel_filename": excel_filename,
+        }
+        history = [*review.get("history", []), entry]
+        summary["review"] = {"revision": expected_revision + 1, "history": history}
+        result = conn.execute(
+            "UPDATE jobs SET result_summary_json=?, updated_at=? WHERE job_id=? AND status='completed'",
+            (json.dumps(summary), now, job_id),
+        )
+        return result.rowcount == 1
+
+
 def expire_stale_uploads(cutoff_iso: str, now: str) -> list[str]:
     """waiting_upload jobs older than cutoff → upload_expired. Returns affected job_ids."""
     with _conn() as conn:

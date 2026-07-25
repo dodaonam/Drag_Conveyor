@@ -101,6 +101,27 @@ class PostprocessConfigTests(unittest.TestCase):
         self.assertEqual(len(uncropped), 1)
         self.assertEqual(int(uncropped[0].mask_roi.sum()), 64)
 
+    def test_detection_keeps_raw_model_bbox_crop_and_output_row_index(self) -> None:
+        profile = _base_profile()
+        accepted, proto_output = _outputs()
+        rejected = accepted.copy()
+        rejected[0, 0, 4] = 0.1
+        det_output = np.concatenate((rejected, accepted), axis=1)
+
+        detections = postprocess_segmentation(
+            det_output,
+            proto_output,
+            _preprocess(),
+            profile.model,
+            postprocess_config=profile.model.postprocess,
+        )
+
+        self.assertEqual(len(detections), 1)
+        detection = detections[0]
+        self.assertEqual(detection.model_bbox_roi_xyxy, (2.0, 2.0, 6.0, 6.0))
+        self.assertEqual(detection.model_bbox_crop_roi_xyxy, (2, 2, 6, 6))
+        self.assertEqual(detection.model_output_row_index, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

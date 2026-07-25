@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import cv2
@@ -13,6 +13,7 @@ from ..config import CalibrationResult, Profile
 from ..inference import OnnxRuntimeEngine, postprocess_segmentation, preprocess_roi
 from ..inspection_modes import (
     AVERAGE_RATIO_INSPECTION_MODE,
+    GEOMETRY_V2_INSPECTION_MODE,
     AverageRatioInspector,
     AverageRatioThresholds,
     is_supported_inspection_mode,
@@ -65,6 +66,19 @@ class BarResult:
     vlm_called: bool = False
     # Verdict hình học gốc (trước VLM). `result` là verdict cuối — VLM có thể hạ về "normal".
     rule_result: str | None = None
+    paddle_id: int | None = None
+    track_ids: tuple[int, ...] = ()
+    vision_status: str | None = None
+    final_reviewed_status: str | None = None
+    classification_source: str | None = None
+    decision_confidence: float | None = None
+    evidence_support_score: float = 0.0
+    suspected_breakage: bool = False
+    possible_breakage_statuses: tuple[str, ...] = ()
+    review_required: bool = False
+    geometry_analysis: dict = field(default_factory=dict)
+    snapshot_metadata: dict = field(default_factory=dict)
+    legacy_measurements_available: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +98,19 @@ class BatchInspectionResult:
     defect_snapshots_dir: Path | None
     normal_snapshots_dir: Path | None
     vlm_request_count: int = 0
+    confirmed_defect_bars: int = 0
+    uncertain_bars: int = 0
+    review_required_bars: int = 0
+    status_counts: dict[str, int] = field(default_factory=dict)
+    geometry_diagnostics: dict = field(default_factory=dict)
+    inspection_mode: str | None = None
+    paddle_schema_version: str | None = None
+    summary_schema_version: str | None = None
+    rule_version: str | None = None
+    model_metadata: dict = field(default_factory=dict)
+    geometry_metadata: dict = field(default_factory=dict)
+    capability_metadata: dict = field(default_factory=dict)
+    timestamp_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +136,8 @@ def run_batch_inspection(
     run_id: str | None = None,
     snapshots_root: Path | None = None,
     inspection_mode: str | None = None,
+    geometry_input: dict | None = None,
+    geometry_config: str | Path | None = None,
 ) -> BatchInspectionResult:
     """Single-pass collect-all: infer full video, calibrate on all data, classify all bars."""
     if not Path(source).exists():
@@ -119,6 +148,52 @@ def run_batch_inspection(
     if not is_supported_inspection_mode(inspection_mode):
         raise ValueError(f"Unsupported inspection_mode: {inspection_mode}")
     run_id = run_id or generate_run_id()
+    if inspection_mode == GEOMETRY_V2_INSPECTION_MODE:
+        if geometry_input is None:
+            raise ValueError("geometry_input is required for geometry_v2")
+        from ..geometry_v2.pipeline import run_geometry_v2_pipeline
+
+        outcome = run_geometry_v2_pipeline(
+            profile=profile,
+            source=source,
+            geometry_input=geometry_input,
+            geometry_config_path=geometry_config or Path(__file__).resolve().parents[2] / "config" / "geometry_v2.json",
+            snapshots_root=snapshots_root,
+            run_id=run_id,
+        )
+        if not outcome.success:
+            return BatchInspectionResult(
+                run_id, False, outcome.failure_reason, None, [], 0, 0, 0, outcome.frames_scanned,
+                0, 0, 0.0, outcome.defect_snapshots_dir, outcome.normal_snapshots_dir,
+                vlm_request_count=0, inspection_mode=inspection_mode,
+                paddle_schema_version="geometry_v2_result/2.0", summary_schema_version="geometry_v2_summary/2.0",
+                rule_version="geometry_v2_rules/2.0.0", model_metadata={"sha256": outcome.model_hash, "artifact_manifest": outcome.artifact_manifest},
+                geometry_diagnostics={"algorithm_config_hash": outcome.algorithm_config_hash}, timestamp_source=outcome.timestamp_source,
+            )
+        bars = [
+            BarResult(
+                bar_id=f"{run_id}_paddle_{event.event.paddle_id:06d}", frame_id=event.source_frame_ids[0], track_id=event.event.track_ids[0],
+                result="normal" if event.status.value == "normal" else "suspected_defect", score=0.0, reasons=list(event.reason_codes), measurements={"length": 0.0, "width": 0.0}, thresholds={}, margins={},
+                bbox_frame_xyxy=(0.0, 0.0, 0.0, 0.0), contour_frame=np.empty((0, 1, 2), dtype=np.float32), latency_ms=0.0,
+                defect_type={
+                    "normal": "normal",
+                    "bent_left": "bent_left",
+                    "bent_right": "bent_right",
+                    "bent_both": "bent_both",
+                    "broken_left": "broken",
+                    "broken_right": "broken",
+                    "broken_center": "broken",
+                }.get(event.status.value), vlm_called=False, rule_result="normal" if event.status.value == "normal" else "suspected_defect", paddle_id=event.event.paddle_id, track_ids=event.event.track_ids,
+                vision_status=event.status.value, classification_source="geometry_v2", suspected_breakage=event.status.value in {"uncertain", "broken_left", "broken_right", "broken_center"}, review_required=event.status.value != "normal", legacy_measurements_available=False,
+                geometry_analysis={"source_frame_ids": event.source_frame_ids, "reason_codes": event.reason_codes, "evidence_summary": event.evidence_summary, "diagnostics": event.diagnostics},
+                snapshot_metadata={"snapshot_type": "single_frame_geometry", "primary_source_frame_id": event.snapshot_source_frame_id, "evidence_source_frame_ids": event.source_frame_ids},
+            )
+            for event in outcome.events
+        ]
+        normal_count = sum(bar.vision_status == "normal" for bar in bars)
+        uncertain_count = sum(bar.vision_status == "uncertain" for bar in bars)
+        return BatchInspectionResult(run_id, outcome.success, outcome.failure_reason, None, bars, len(bars), normal_count, len(bars) - normal_count, outcome.frames_scanned, 0, 0, 0.0, outcome.defect_snapshots_dir, outcome.normal_snapshots_dir,
+            vlm_request_count=0, confirmed_defect_bars=len(bars) - normal_count - uncertain_count, uncertain_bars=uncertain_count, review_required_bars=uncertain_count, status_counts={status: sum(bar.vision_status == status for bar in bars) for status in {bar.vision_status for bar in bars}}, geometry_diagnostics={"algorithm_config_hash": outcome.algorithm_config_hash}, inspection_mode=inspection_mode, paddle_schema_version="geometry_v2_result/2.0", summary_schema_version="geometry_v2_summary/2.0", rule_version="geometry_v2_rules/2.0.0", model_metadata={"sha256": outcome.model_hash, "artifact_manifest": outcome.artifact_manifest}, geometry_metadata={"input_schema_version": "geometry_input/2.0", "algorithm_config_hash": outcome.algorithm_config_hash}, capability_metadata=outcome.capability_metadata, timestamp_source=outcome.timestamp_source)
     region = profile.region
     roi_config = region.roi
     trigger_band = profile.collection.trigger_band
