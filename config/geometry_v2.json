@@ -1,7 +1,7 @@
 {
   "schema_version": "geometry_v2_config/2.0",
   "rule_version": "geometry_v2_rules/2.0.0",
-  "model": {"artifact_path": "weights/model_imgsz_640/best.onnx", "expected_sha256": "a3a8d3cad91ce8105f94864107318bc09924375fb924b5a3e790099a409c49e8", "expected_input_size": 640, "fail_on_hash_mismatch": true, "artifact_manifest_version": "model_artifact/1.0"},
+  "model": {"artifact_path": "weights/model_imgsz_640/best.onnx", "expected_sha256": "dc8ab87b4ebe1bfbf2f3cca5594373c38c5ba2492cbba745ae9df83ed30737d9", "expected_input_size": 640, "fail_on_hash_mismatch": true, "artifact_manifest_version": "model_artifact/1.0"},
   "video": {"decoder_backend": "pyav", "timestamp_epsilon_sec": 0.000000001, "allow_cfr_index_fallback": true, "require_cfr_confirmation_for_fallback": true},
   "deployment": {"capability_record_version": "geometry_capabilities/1.0", "outside_domain_policy": "uncertain"},
   "geometry": {"minimum_roi_width_px": 160, "minimum_roi_height_px": 160, "minimum_centerline_span_ratio": 0.70, "maximum_allowed_roll_deg": 15.0, "minimum_side_field_of_view_ratio": 0.25, "chain_band_width_ratio_min": 0.02, "chain_band_width_ratio_max": 0.20, "default_chain_band_width_ratio": 0.05, "motion_direction": "positive_s"},

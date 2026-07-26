@@ -39,6 +39,12 @@
 # nuitka-project: --include-package=httpx
 # nuitka-project: --include-package=httpcore
 # nuitka-project: --include-package=cv2
+# Geometry V2 decodes original-frame timestamps through a runtime import of PyAV.
+# Mark the root module as required in the standalone build.  Including every
+# PyAV submodule as a package triggers a Nuitka 4.1.3 optimizer crash on Windows.
+# nuitka-project: --include-module=av
+# PyAV's compiled stream bindings import this helper dynamically at runtime.
+# nuitka-project: --include-module=av.utils
 #
 # ── Package-level data (SSL certs, boto3/botocore JSON service definitions) ──
 # nuitka-project: --include-package-data=certifi
@@ -53,6 +59,7 @@
 # NEVER include server/.env or config/app_settings.json (real credentials).
 # Separator is = (equals), NOT colon.
 # nuitka-project: --include-data-files=config/base_profile.json=config/base_profile.json
+# nuitka-project: --include-data-files=config/geometry_v2.json=config/geometry_v2.json
 # nuitka-project: --include-data-files=server/main.py=server/main.py
 # nuitka-project: --include-data-files=server/db.py=server/db.py
 # nuitka-project: --include-data-files=server/worker.py=server/worker.py

@@ -35,11 +35,18 @@ def wake() -> None:
 # ── Summary builder ───────────────────────────────────────────────────────────
 
 def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> dict:
+    def snapshot_name(bar) -> str:
+        """Match Geometry V2's snapshot frame, not its first observation frame."""
+        frame_id = bar.snapshot_metadata.get("primary_source_frame_id")
+        if not isinstance(frame_id, int):
+            frame_id = bar.frame_id
+        return f"track_{bar.track_id:06d}_frame_{frame_id:09d}.jpg"
+
     defects = []
     for bar in result.bars:
         if bar.result != "suspected_defect":
             continue
-        snap_name = f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
+        snap_name = snapshot_name(bar)
         snap_key = next((k for k in defect_keys if k.endswith(snap_name)), None)
         defects.append({
             "bar_id": bar.bar_id,
@@ -73,7 +80,7 @@ def _build_summary(result, defect_keys: list[str], normal_keys: list[str]) -> di
     for bar in result.bars:
         if bar.result != "normal":
             continue
-        snap_name = f"track_{bar.track_id:06d}_frame_{bar.frame_id:09d}.jpg"
+        snap_name = snapshot_name(bar)
         snap_key = next((k for k in normal_keys if k.endswith(snap_name)), None)
         normals.append({
             "bar_id": bar.bar_id,

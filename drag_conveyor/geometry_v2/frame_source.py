@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
 import numpy as np
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class FrameSourceError(RuntimeError):
@@ -27,6 +31,7 @@ def iter_original_frames(path: str | Path, *, timestamp_epsilon_sec: float = 0.0
     try:
         import av
     except ModuleNotFoundError as exc:
+        LOGGER.exception("PyAV import failed for Geometry V2 source: %s", path)
         raise FrameSourceError("PyAV is required for geometry_v2 frame provenance") from exc
     source_path = Path(path)
     if not source_path.is_file():
@@ -54,4 +59,5 @@ def iter_original_frames(path: str | Path, *, timestamp_epsilon_sec: float = 0.0
     except FrameSourceError:
         raise
     except Exception as exc:
+        LOGGER.exception("PyAV failed while decoding Geometry V2 source: %s", source_path)
         raise FrameSourceError(f"Unable to decode video source: {source_path}") from exc

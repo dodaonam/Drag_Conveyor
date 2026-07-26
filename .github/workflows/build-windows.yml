@@ -101,6 +101,10 @@ jobs:
             Write-Error "SECURITY: config\app_settings.json was bundled into dist!"
             exit 1
           }
+          if (-not (Test-Path "dist\DragConveyor\config\geometry_v2.json")) {
+            Write-Error "Required config\geometry_v2.json was not bundled into dist!"
+            exit 1
+          }
           if (Test-Path "dist\DragConveyor\bin\cloudflared.exe") {
             Write-Error "SECURITY: cloudflared.exe must not be bundled in installer staging"
             exit 1

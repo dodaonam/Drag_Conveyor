@@ -28,7 +28,7 @@
       "640": "weights/model_imgsz_640/best.onnx"
     },
     "postprocess": {
-      "conf_threshold": 0.4,
+      "conf_threshold": 0.3,
       "iou_threshold": 0.5,
       "target_class_ids": [
         0

@@ -71,6 +71,10 @@ if exist "dist\DragConveyor\config\app_settings.json" (
     echo [ERROR] SECURITY: config\app_settings.json was bundled into dist!
     exit /b 1
 )
+if not exist "dist\DragConveyor\config\geometry_v2.json" (
+    echo [ERROR] Required config\geometry_v2.json was not bundled into dist!
+    exit /b 1
+)
 powershell -NoProfile -Command "$svcDist = if (Test-Path 'dist\tunnel_service_build\tunnel_service.dist') { 'dist\tunnel_service_build\tunnel_service.dist' } else { 'dist\tunnel_service_build\service.dist' }; if (-not (Test-Path $svcDist)) { Write-Error 'tunnel_service .dist directory not found'; exit 1 }; New-Item -ItemType Directory -Force -Path 'dist\DragConveyor\bin\tunnel_service' | Out-Null; Copy-Item 'vendor\wkhtmltopdf.exe' 'dist\DragConveyor\bin\'; Copy-Item (Join-Path $svcDist '*') 'dist\DragConveyor\bin\tunnel_service\' -Recurse -Force; if (Test-Path 'dist\DragConveyor\bin\cloudflared.exe') { Write-Error 'SECURITY: cloudflared.exe must not be bundled in the installer staging directory'; exit 1 }"
 if errorlevel 1 ( echo [ERROR] Required runtime binary staging failed & exit /b 1 )
 
